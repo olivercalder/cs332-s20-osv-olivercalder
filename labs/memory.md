@@ -174,7 +174,7 @@ to manage physical memory allocation, more details can be found in `pmem.c`. `pm
 the physical memory (how many address spaces have reference to it, size of the allocated memory and so on).
 
 Both `pmem_alloc()` and `pmem_nalloc()` returns a *physical* memory address. To access it, you need to call `kmap_p2v()` to get the corresponding kernel virtual
-address. kernel virtual address = KMAP_BASE + physical address -- all of physical memory is mapped into the kernel address space. You should use `pmem_alloc()`
+address. kernel virtual address = KMAP_BASE + physical address — all of physical memory is mapped into the kernel address space. You should use `pmem_alloc()`
 or `pmem_nalloc()` to directly allocate physical memory when you need a page of physical memory (in cases like page table, user process memory, and kernel stack).
 
 To map a page of physical memory into a process's address space, you can call `vpmap_map()` (see function protytpe in `include/kernel/vpmap.h`
