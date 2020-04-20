@@ -3,10 +3,6 @@
 #include <lib/stddef.h>
 
 int main(int argc, char** argv) {
-/*    while (1) {
-     spawn("lab2test");
-    //wait(-1, NULL);
-    }*/
     int pid = spawn("sh");
     if (pid < 0) {
         printf("init process fails to spawn children\n");

@@ -11,19 +11,14 @@
 #define PROC_MAX_ARG 128
 #define PROC_NAME_LEN 32
 #define PROC_MAX_FILE 128
-#define STATUS_UNUSED 0xbeefeeb
 
 struct proc {
     pid_t pid;
-    int exit_status;                    // this process's exit status
     char name[PROC_NAME_LEN];
     struct addrspace as;
     struct inode *cwd;                  // current working directory
-    struct proc *parent;                // track process's parent
     List threads;                       // list of threads belong to the process, right now just 1 per process
     Node proc_node;                     // used by ptable to keep track each process
-    struct file *files[PROC_MAX_FILE];
-    struct condvar wait_cv;             // condition variable for process to wait for its children
 };
 
 struct proc *init_proc;

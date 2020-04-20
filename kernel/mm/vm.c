@@ -36,7 +36,7 @@ static struct memregion* memregion_map_internal(struct addrspace *as, vaddr_t ad
         memperm_t perm, struct memstore *store, offset_t ofs, int shared);
 
 static struct memregion* memregion_copy_internal(struct addrspace *as, 
-		struct memregion *src, vaddr_t addr);
+        struct memregion *src, vaddr_t addr);
 
 static struct memregion* memregion_find_internal(struct addrspace *as, vaddr_t addr, size_t size);
 
@@ -184,8 +184,8 @@ as_copy_memregion(struct addrspace *as, struct memregion *src, vaddr_t addr)
             sleeplock_acquire(&as->as_lock);
         }
     }
-	
-	dst = memregion_copy_internal(as, src, addr);
+    
+    dst = memregion_copy_internal(as, src, addr);
 
     sleeplock_release(&as->as_lock);
     if (as != src->as) {
@@ -255,39 +255,7 @@ found:
 err_t
 memregion_extend(struct memregion *region, int size, vaddr_t *old_bound)
 {
-   kassert(region);
-    err_t err;
-    size_t new_end;
-    int decrease = size < 0;
-    sleeplock_acquire(&region->as->as_lock);
-    if (old_bound) {
-        *old_bound = region->end;
-    }
-    new_end = region->end + size;
-    if (decrease) {
-        // ignore if new end is less than current start
-        if (region->start > new_end) {
-            err = ERR_OK;
-            goto done;
-        }
-    } else {
-        // account for size + end overflow case
-        if (new_end < region->end) {
-            err = ERR_VM_INVALID;
-            goto done;
-        }
-        // if new end is on the same page as old end it's already allocated to the memregion
-        if (pg_round_up(region->end) != pg_round_up(new_end) &&
-            memregion_find_internal(region->as, region->end, size)) {
-            err = ERR_VM_BOUND;
-            goto done;
-        }
-    }
-    region->end = new_end;
-    err = ERR_OK;
-done:
-    sleeplock_release(&region->as->as_lock);
-    return err;
+    return ERR_OK;
 }
 
 err_t
@@ -322,6 +290,7 @@ memregion_comparator(const Node *a, const Node *b, void *aux)
 {
     struct memregion *mr_a = list_entry(a, struct memregion, as_node);
     struct memregion *mr_b = list_entry(b, struct memregion, as_node);
+    // if a and b's memregion is consecutive, we want a after b in the list, +1 bumps 0 to postivie
     return mr_a->start >= mr_b->end;
 }
 
@@ -420,15 +389,12 @@ memregion_copy_internal(struct addrspace *as, struct memregion *src, vaddr_t add
     // Try mapping a region with the same attributes as the source
     if ((dst = memregion_map_internal(as, addr, src->end - src->start, 
             src->perm, src->store, src->ofs, src->shared)) != NULL) {
-        // Copy on write: copy mappings and set both src and dst read-only
-        memperm_t perm = is_kern_memperm(src->perm) ? MEMPERM_R : MEMPERM_UR;
+        // hard copy over everything
         if (vpmap_copy(src->as->vpmap, as->vpmap, src->start, addr,
-            pg_round_up(src->end - src->start)/pg_size, perm) != ERR_OK) {
+             pg_round_up(src->end - src->start)/pg_size, src->perm) != ERR_OK) {
             memregion_unmap_internal(dst);
             return NULL;
         }
-        // We may have changed mapping permissions for the source address space
-        vpmap_flush_tlb();
     }
     return dst;
 }

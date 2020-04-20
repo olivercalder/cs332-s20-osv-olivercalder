@@ -93,25 +93,17 @@ proc_init(char* name)
     slen = slen < PROC_NAME_LEN-1 ? slen : PROC_NAME_LEN-1;
     memcpy(p->name, name, slen);
     p->name[slen] = 0;
-    p->parent = proc_current();
-    p->exit_status = STATUS_UNUSED;
 
     list_init(&p->threads);
-    condvar_init(&p->wait_cv);
 
-	// cwd for all processes are root for now
+    // cwd for all processes are root for now
     sb = root_sb;
-	inum = root_sb->s_root_inum;
+    inum = root_sb->s_root_inum;
     if ((err = fs_get_inode(sb, inum, &p->cwd)) != ERR_OK) {
         as_destroy(&p->as);
         proc_free(p);
         return NULL;
     }
-
-    memset(p->files, 0, sizeof(p->files));
-    p->files[0] = &stdin;
-    p->files[1] = &stdout;
-
     return p;
 }
 
@@ -137,7 +129,7 @@ proc_spawn(char* name, char** argv, struct proc **p)
     if ((err = stack_setup(proc, argv, &stackptr)) != ERR_OK) {
         goto error;
     }
-    
+
     if ((t = thread_create(proc->name, proc, DEFAULT_PRI)) == NULL) {
         err = ERR_NOMEM;
         goto error;
@@ -167,44 +159,8 @@ struct proc*
 proc_fork()
 {
     kassert(proc_current());  // caller of fork must be a process
-    struct proc *curr = proc_current();
-    struct proc *new;
-    struct thread *t;
-    err_t err;
-
-    if ((new = proc_init(curr->name)) == NULL) {
-        return NULL;
-    }
-    // copy parent address space
-    if ((err = as_copy_as(&curr->as, &new->as)) != ERR_OK) {
-        goto error;
-    }
-    // copy parent file table
-     for (int i=0; i<PROC_MAX_FILE; i++) {
-        if (curr->files[i] != NULL) {
-            fs_reopen_file(curr->files[i]);
-            new->files[i] = curr->files[i];
-        }
-    }
-    // create running thread
-    if ((t = thread_create(new->name, new, DEFAULT_PRI)) == NULL) {
-        err = ERR_NOMEM;
-        goto error;
-    }
-
-    // add to ptable
-    spinlock_acquire(&ptable_lock);
-    list_append(&ptable, &new->proc_node);
-    spinlock_release(&ptable_lock);
-
-    // copy parent trapframe
-    *t->tf = *thread_current()->tf;
-    tf_set_return(t->tf, 0);
-    thread_start_context(t, NULL, NULL);
-    return new;
-error:
-    as_destroy(&new->as);
-    proc_free(new);
+    
+    /* your code here */
     return NULL;
 }
 
@@ -238,29 +194,8 @@ proc_detach_thread(struct thread *t)
 int
 proc_wait(pid_t pid, int* status)
 {
-    struct proc *curr = proc_current();
-    spinlock_acquire(&ptable_lock);
-    for (Node *n = list_begin(&ptable); n != list_end(&ptable); n = list_next(n)) {
-        struct proc *proc = list_entry(n, struct proc, proc_node);
-        if (proc->parent == curr && (proc->pid == pid || pid == ANY_CHILD)) {
-            // found child to wait on, wait till child exits
-            while (proc->exit_status == STATUS_UNUSED) {
-                condvar_wait(&curr->wait_cv, &ptable_lock);
-            }
-            // grab exit status from child
-            if (status) {
-                *status = proc->exit_status;
-            }
-            // remove child from list and free child
-            list_remove(&proc->proc_node);
-            pid = proc->pid;
-            proc_free(proc);
-            spinlock_release(&ptable_lock);
-            return pid;
-        }
-    }
-    spinlock_release(&ptable_lock);
-    return ERR_CHILD;
+    /* your code here */
+    return pid;
 }
 
 void
@@ -280,24 +215,8 @@ proc_exit(int status)
     // release process's cwd
     fs_release_inode(p->cwd);
  
-    // clean up my open files
-    for (int i=0; i<PROC_MAX_FILE; i++) {
-        if (p->files[i] != NULL) {
-            fs_close_file(p->files[i]);
-        }
-    }
-    // go through ptable and pass all my children to init
-    // then wake up my parent
-    spinlock_acquire(&ptable_lock);
-    for (Node *n = list_begin(&ptable); n != list_end(&ptable); n = list_next(n)) {
-        struct proc *proc = list_entry(n, struct proc, proc_node);
-        if (proc->parent == p) {
-            proc->parent = init_proc;
-        }
-    }
-    p->exit_status = status;
-    condvar_signal(&p->parent->wait_cv);
-    spinlock_release(&ptable_lock);
+    /* your code here */
+
     thread_exit(status);
 }
 
@@ -401,7 +320,7 @@ stack_setup(struct proc *p, char **argv, vaddr_t* ret_stackptr)
     }
     memset((void*) kmap_p2v(paddr), 0, pg_size);
     // create memregion for stack
-    if (as_map_memregion(&p->as, USTACK_UPPERBOUND - 10*pg_size, 10*pg_size, MEMPERM_URW, NULL, 0, False) == NULL) {
+    if (as_map_memregion(&p->as, stacktop, pg_size, MEMPERM_URW, NULL, 0, False) == NULL) {
         err = ERR_NOMEM;
         goto error;
     }
@@ -409,41 +328,17 @@ stack_setup(struct proc *p, char **argv, vaddr_t* ret_stackptr)
     if ((err = vpmap_map(p->as.vpmap, stacktop, paddr, 1, MEMPERM_URW)) != ERR_OK) {
         goto error;
     }
-
-    // this allocated page is our stack page 
-    // first start it at top of the stack
+    // kernel virtual address of the user stack, points to top of the stack
+    // as you allocate things on stack, move stackptr downward.
     stackptr = kmap_p2v(paddr) + pg_size;
 
-    size_t argc, wordsize;
-    size_t *ustack;
-    wordsize = sizeof(void*);
-    if ((ustack = kmalloc(sizeof(size_t) * (3+PROC_MAX_ARG+1))) == NULL) {
-        err = ERR_NOMEM;
-        goto error;
-    }
-    // first copy arguments themselves onto the stack
-    for (argc = 0; argv[argc] != NULL && argc < PROC_MAX_ARG; argc++){
-        size_t len = strlen(argv[argc]) + 1;
-        stackptr -= len;
-        memcpy((void*)stackptr, argv[argc], len);
-        ustack[3+argc] = USTACK_ADDR(stackptr); // saving address of the string we just pushed 
-    }
-    ustack[3+argc] = NULL;
+    /* Your Code Here.  */
+    // allocate space for fake return address, argc, argv
+    // remove following line when you actually set up the stack
+    stackptr -= 3 * sizeof(void*);
 
-    // update stackptr alignment
-    stackptr &= ~(wordsize-1);
-    // allocate room for argv elements (char* to actual data)
-    stackptr -= (argc+1) * wordsize;
-
-    ustack[0] = ~0x1; // fake return PC
-    ustack[1] = argc;
-    ustack[2] = USTACK_ADDR(stackptr);
-
-    // allocate room for fake return, argc, argv
-    stackptr -= 3 * wordsize;
-    // allocate room for fake return, argc, argv
-    memcpy((void*)stackptr, ustack, (3+argc+1) * wordsize);
-    *ret_stackptr = USTACK_ADDR(stackptr);
+    // translates stackptr from kernel virtual address to user stack address
+    *ret_stackptr = USTACK_ADDR(stackptr); 
     return err;
 error:
     pmem_free(paddr);
