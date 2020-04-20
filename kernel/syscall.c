@@ -3,7 +3,6 @@
 #include <kernel/console.h>
 #include <kernel/kmalloc.h>
 #include <kernel/fs.h>
-#include <kernel/pipe.h>
 #include <lib/syscall-num.h>
 #include <lib/errcode.h>
 #include <lib/stddef.h>
@@ -54,44 +53,6 @@ static bool validate_str(char *s);
  */
 static bool validate_bufptr(void* buf, size_t size);
 
-/*
- * Allocate a file descriptor for file f.
- *
- * Return:
- * Non-negative file descriptor on success.
- * -1 - Failed to allocate a file descriptor.
- */
-static int alloc_fd(struct file *f);
-/*
- * Validate file descriptor fd.
- */
-static bool validate_fd(int fd);
-
-static int
-alloc_fd(struct file *f)
-{
-    int i;
-
-    // go through process struct
-    kassert(f);
-    struct proc *p = proc_current();
-    for (i = 0; i < PROC_MAX_FILE; i++) {
-        if (p->files[i] == NULL) {
-            p->files[i] = f;
-            return i;
-        }
-    }
-    return -1;
-}
-
-static bool
-validate_fd(int fd)
-{
-    if (fd >= 0 && fd < PROC_MAX_ARG) {
-        return True;
-    }
-    return False;
-}
 
 static sysret_t (*syscalls[])(void*) = {
     [SYS_fork] = sys_fork,
@@ -208,24 +169,22 @@ sys_spawn(void *arg)
 static sysret_t
 sys_wait(void* arg)
 {
-    sysarg_t pid, wstatus;
-    kassert(fetch_arg(arg, 1, &pid));
-    kassert(fetch_arg(arg, 2, &wstatus));
-    // wstatus is optional so NULL is allowed
-    if (wstatus != NULL && !validate_bufptr((int *)wstatus, sizeof(int))) {
-        return ERR_FAULT;
-    }
-    return proc_wait((int)pid, (int*)wstatus);
+    /* remove when writing your own solution */
+    for (;;) {}
+    panic("unreacchable");
 }
 
 // void exit(int status);
 static sysret_t
 sys_exit(void* arg)
 {
-    sysarg_t status = 0;
-    kassert(fetch_arg(arg, 1, &status));
-    proc_exit((int)status);
-    panic("unreachable");
+    // temp code for lab2 to terminate the kernel after one process exits
+    // remove for lab3
+    kprintf("shutting down\n");
+    shutdown();
+    kprintf("oops still running\n");
+    for(;;) {}
+    panic("syscall exit not implemented");
 }
 
 // int getpid(void);
@@ -246,44 +205,14 @@ sys_sleep(void* arg)
 static sysret_t
 sys_open(void *arg)
 {
-    sysarg_t pathname, flags, mode;
-    struct file *f;
-    int fd;
-    err_t err;
-
-    kassert(fetch_arg(arg, 1, &pathname));
-    if (!validate_str((char*)pathname)) {
-        return ERR_FAULT;
-    }
-    kassert(fetch_arg(arg, 2, &flags));
-    kassert(fetch_arg(arg, 3, &mode));
-    if ((err = fs_open_file((char*)pathname, (int)flags, (fmode_t)mode, &f)) != ERR_OK) {
-        return err;
-    }
-    if ((fd = alloc_fd(f)) < 0) {
-        return ERR_NOMEM;
-    }
-    return fd;
+    panic("syscall open not implemented");
 }
 
 // int close(int fd);
 static sysret_t
 sys_close(void *arg)
 {
-    sysarg_t fd;
-    struct proc *p;
-
-    kassert(fetch_arg(arg, 1, &fd));
-    if (!validate_fd((int)fd)) {
-        return ERR_INVAL;
-    }
-    p = proc_current();
-    if (p->files[fd] == NULL) {
-        return ERR_INVAL;
-    }
-    fs_close_file(p->files[fd]);
-    p->files[fd] = NULL;
-    return ERR_OK;
+    panic("syscall close not implemented");
 }
 
 // int read(int fd, void *buf, size_t count);
@@ -300,17 +229,10 @@ sys_read(void* arg)
         return ERR_FAULT;
     }
 
-    struct file *f;
-    struct proc *p;
-    if (!validate_fd((int)fd)) {
-        return ERR_INVAL;
+    if (fd == 0) {
+        return console_read((void*)buf, (size_t)count);
     }
-    p = proc_current();
-    f = p->files[fd];
-    if (f == NULL) {
-        return ERR_INVAL;
-    }
-    return fs_read_file(f, (void*)buf, (size_t)count, &f->f_pos);
+    return ERR_INVAL;
 }
 
 // int write(int fd, const void *buf, size_t count)
@@ -327,18 +249,11 @@ sys_write(void* arg)
         return ERR_FAULT;
     }
 
-    struct file *f = NULL;
-    struct proc *p;
-    if (!validate_fd((int)fd)) {
-        return ERR_INVAL;
+    if (fd == 1) {
+        // write some stuff for now assuming one string
+        return console_write((void*)buf, (size_t) count);
     }
-
-    p = proc_current();
-    f = p->files[fd];
-    if (f == NULL) {
-        return ERR_INVAL;
-    }
-    return fs_write_file(f, (void*)buf, (size_t)count, &f->f_pos);
+    return ERR_INVAL;
 }
 
 // int link(const char *oldpath, const char *newpath)
@@ -440,45 +355,14 @@ sys_rmdir(void *arg)
 static sysret_t
 sys_fstat(void *arg)
 {
-    sysarg_t fd, stat;
-    struct proc *p;
-    struct file *f;
-
-    kassert(fetch_arg(arg, 1, &fd));
-    kassert(fetch_arg(arg, 2, &stat));
-    if (!validate_bufptr((struct stat*)stat, sizeof(struct stat))) {
-        return ERR_FAULT;
-    }
-    if (!validate_fd((int)fd)) {
-        return ERR_INVAL;
-    }
-    p = proc_current();
-    f = p->files[fd];
-    if (f == NULL || f->f_inode == NULL) {
-        return ERR_INVAL;
-    }
-    ((struct stat*)stat)->inode_num = f->f_inode->i_inum;
-    ((struct stat*)stat)->ftype = f->f_inode->i_ftype;
-    ((struct stat*)stat)->size = f->f_inode->i_size;
-    return ERR_OK;
+    panic("syscall fstat not implemented");
 }
 
 // void *sbrk(size_t increment);
 static sysret_t
 sys_sbrk(void *arg)
 {
-    vaddr_t retaddr = 0;
-    sysarg_t increment;
-    struct proc *p;
-
-    kassert(fetch_arg(arg, 1, &increment));
-
-    // expand heap size
-    p = proc_current();
-    if (memregion_extend(p->as.heap, (size_t)increment, &retaddr) != ERR_OK) {
-		return ERR_NOMEM;
-    }
-    return retaddr;
+    panic("syscall sbrk not implemented");
 }
 
 // void memifo();
@@ -493,49 +377,14 @@ sys_meminfo(void *arg)
 static sysret_t
 sys_dup(void *arg)
 {
-    sysarg_t fd;
-    struct file *f;
-    struct proc *p;
-
-    kassert(fetch_arg(arg, 1, &fd));
-    if (!validate_fd((int)fd)) {
-        return ERR_INVAL;
-    }
-    p = proc_current();
-    f = p->files[fd];
-    if (f == NULL) {
-        return ERR_INVAL;
-    }
-    if ((fd = alloc_fd(f)) < 0) {
-        return ERR_NOMEM;
-    }
-    fs_reopen_file(f);
-    return fd;
+    panic("syscall dup not implemented");
 }
 
 // int pipe(int* fds);
 static sysret_t
 sys_pipe(void* arg)
 {
-    sysarg_t fds;
-    struct file *read_end, *write_end;
-    struct proc *p = proc_current();
-    kassert(fetch_arg(arg, 1, &fds));
-    if (!validate_bufptr((int*)fds, sizeof(int)*2)) {
-        return ERR_FAULT;
-    }
-    if (pipe_alloc(&read_end, &write_end) != ERR_OK) {
-        return ERR_NOMEM;
-    }
-    if ((((int*)fds)[0] = alloc_fd(read_end)) < 0) {
-        return ERR_NOMEM;
-    }
-    if ((((int*)fds)[1] = alloc_fd(write_end)) < 0) {
-        fs_close_file(read_end);
-        p->files[((int*)fds)[0]] = NULL;
-        return ERR_NOMEM;
-    }
-    return ERR_OK;
+    panic("syscall pipe not implemented");
 }
 
 // void sys_info(struct sys_info *info);
