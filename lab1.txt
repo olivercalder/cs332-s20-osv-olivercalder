@@ -1,0 +1,102 @@
+Question #1: After attaching the qemu instance to gdb, set a breakpoint at the entrance of osv by typing in "b main". You should see a breakpoint set at main in kernel/main.c. Then type "c" to continue execution. OSV will go through booting and stop at main. Which line of code in main prints the physical memory table? (Hint: use the n comand)
+
+    Line 47: sched_start() prints the physical memory map
+
+
+Question #2: We can examine memory using GDB’s x command. The GDB manual has full details, but for now, it is enough to know that the command x/nx ADDR prints n words of memory at ADDR. (Note that both ‘x’s in the command are lowercase, the second x tells gdb to display memory content in hex)
+
+To examine instructions in memory (besides the immediate next one to be executed, which GDB prints automatically), use the x/i command. This command has the syntax x/ni ADDR, where n is the number of consecutive instructions to disassemble and ADDR is the memory address at which to start disassembling.
+
+Repeat the previous process to break at main, what's the memory address of main (p main)? Does GDB work with real physical addresses?
+
+    On consecutive runs of `make qemu-gdb`, the memory address of main is always 0xffffffff80105868. This means that gdb works with virtual addresses, since it is unlikely that the same application would be assigned the exact same physical memory addresses multiple times in a row.
+
+
+Question #3: You may have noticed that when gdb hit your breakpoint, the message specified a thread:
+``` Thread 1 hit Breakpoint 1, main () at kernel/main.c:34 ```
+osv boots up with multiple threads, which you can see by running info threads. We'll talk a lot more about threads in the coming weeks—the basic idea is that each thread is an independent unit of execution, which enables simultaneous computation. For now the goal is to explore gdb's capabilities when it comes to multi-threaded programs. At the start of main, info threads indicates that one thread is halted. What function starts it running? What "main" function does the second thread start in? What happens if you restart and set a breakpoint for that function?
+
+    Main calls the thread_start_context function, which then calls kernel_init, which is what starts the second thread by calling the mp_start_ap function, which in turn calls the lapic_start_ap function. If you put a breakpoint at lapic_start_ap and step through using n, you will eventually get to a loop which increments a memory address until it reaches the value 0x1869f. Once that loop is done running, it gets to another loop where it again counts to 0x1869f. After this, it calls lapic_reg_write twice with different register modifications before each call, and after the second call, the second thread is marked "running", though it is not yet running any function. Then, it counts to 0x1869f again, after which time the second thread is now running readeflags. When lapic_start_ap returns to mp_start_ap, the second thread is now running intr_set_level, then lapic_read_id, then thread_currentm then spinlock_acquire. Eventually, Thread 1 is in a loop at the end of main and Thread 2 is in a loop at the end of main_ap, which is where the shell (if it is a shell) waits for user input.
+
+Question #4: We've had a discussion about what should happen if one program unlinks a file another program is reading. Now it's your turn to track down what osv will do in that situation. Start by studying fs_unlink in kernel/fs/fs.c and go from there. You don't have to be 100% certain or run exhaustive tests—just provide your best understanding and justify it by what you observe in the code.
+
+    There are two types of reference counters in the inode: i_ref and i_nlink. The former counts the number of threads currently holding a reference to the inode, while the latter counts the number of hard links to it. i_ref is modified by three functions: fs_alloc_inode sets i_ref = 1, fs_get_inode increments i_ref, and fs_release_inode decrements i_ref. When fs_release_inode decrements i_ref,
+        if [i_ref falls to 0], then 
+            if [i_nlinks == 0 or the inode is dirty (has been modified)], then
+                it gives the kernel thread a reference to the inode and adds it to the cleanup_thread_inodes list, where the kernel will write it to disk if its i_nlink != 0 or remove the inode from cache and disk if it has no hard links.
+            else if [inode is not valid or (i_nlink != 0 and inode is not dirty)], then 
+                it calls free_inode, which frees the inode from the cache.
+            fi
+        else if [i_ref remains > 0], then
+            some other thread is currently referencing the inode, so none of these things happen, and the inode remains safely in the cache.
+        fi
+    When the remaining thread(s) are done using the inode, they will call fs_release_inode, and it is at that point that the inode may or may not be removed pending these same conditions.
+    This all motivates the way fs_unlink works. fs_unlink calls fs_find_parent_inode, which (if successful), increments i_ref by 1. 
+        current state: i_ref = +1, i_nlink = +0 (compared to before the call to fs_unlink)
+    Then, it calls the i_ops function unlink (defined as unlink_inode_in_dir in kernel/fs/sfs/sfs.c), which does many things including calling sfs_lookup which calls fs_get_inode,
+        current_state: i_ref = +2, i_nlink = +0 
+    removing the inode entry from its parent directory inode (this prohibits the file from being found again by the link), decrementing i_nlink,
+        current_state: i_ref = +2, i_nlink = -1
+    setting the inode to dirty, writing it to disk (which marks the inode as clean again), and calling fs_release_inode,
+        current_state: i_ref = +1, i_nlink = -1
+    where since i_ref is still greater than 0, none of the removal processes happen.
+    Now back in the fs_unlink function, it calls fs_release_inode, which decrements i_ref
+        current_state: i_ref = +0, i_nlink = -1
+    and the checks occur again. If there is another program reading a file, then that program must have a thread currently referencing the inode, so i_ref > 0. Thus, again, none of the removal processes happen. As soon as that program is done reading the file, it will call fs_release_inode for a third time, at which point, assuming that there are no other threads which have a reference to the inode, it will finally be the case that i_ref == 0, and thus it will carry out the checks. Now, if unlink was called on the last link to the inode, then i_nlink == 0, so the inode will be added to the cleanup_thread_inodes list, which will cause the kernel to remove the file from cache and disk. Thus, unlinking a file should have no effect on a program which is currently reading that file, unless that program tries to open the file again with another thread.
+
+
+Question #5: What is the structure of an inode in osv? Include in your answer the connection from an inode to data blocks and osv's maximum file size (given BDEV_BLK_SIZE).
+
+    Inodes are defined by the following struct:    
+    struct inode {
+        inum_t i_inum; // Inode number
+        struct super_block *sb; // Superblock
+        unsigned int i_ref; // Reference counter. Note that reference counter is protected by the superblock's s_lock
+        unsigned int i_nlink; // Number of links
+        ftype_t i_ftype; // File type
+        fmode_t i_mode; // File permission
+        size_t i_size; // File length in bytes
+        void *i_fs_info; // Filesystem specific inode info
+        state_t i_state; // State of in-memory inode
+        struct sleeplock i_lock; // Lock protecting inode data structures
+        struct inode_operations *i_ops; // Inode operations
+        struct file_operations *i_fops; // File operations for this inode
+        struct memstore *store; // memstore to read pages from this inode
+        Node node; // List of dirty inodes or inodes with zero links (used by the cleanup thread)
+    };
+    To access a data block for the file, call file->f_ops->read, which is (in this case) translated to sfs_read (or sfs_write, etc.), which calls read_data, which calls get_data_block, which accesses the inode->i_fs_info->i_addrs[blk_index]. Thus, file data blocks are referenced through the i_fs_info parameter of the inode struct. inode->i_fs_info is of type void* since it needs to be compatible with any filesystem-specific inode structures and functions.
+    The maximum filesize is also dependent on the filesystem implementation. For SFS, the maximum file size is given by (SFS_NDIRECT + SFS_NINDIRECT * (BDEV_BLK_SIZE / sizeof(uint32_t))) * BDEV_BLK_SIZE, where SFS_NDIRECT is defined as 12, SFS_NINDIRECT is defined as 2, and BDEV_BLK_SIZE is defined as 512. Thus, the maximum file size is (12 + 2 * (512 / 4)) * 512 = 137216 B, which is 134 MB. 
+
+
+Question #6: Which inodes are in use? How many are used for files and how many are used for directories?
+
+    There are nine total inodes in use. The only directory is inode 1 (presumably this is the root directory), and inodes 2-9 are files:
+        inode 2: README
+        inode 3: largefile
+        inode 4: smallfile
+        inode 5: sh
+        inode 6: ls
+        inode 7: init
+        inode 8: cat
+        inode 9: echo
+    However, after calling fs_get_inode to get those inodes, the i_ref values for all of them are 1, which means that my call to fs_get_inode is the only thread which currently holds a reference to those inodes. Thus, none of them are "in use", so to speak, by any other thread, at least at the end of fs_init.
+
+
+Question #7: How many data blocks are in use? Only count data blocks used for file contents, not blocks allocated for other things. Are each file's data blocks contiguous (i.e., do the blocks for a given file have consecutive numbers)?
+
+    In total, there are 290 data blocks in use.
+        inode 1, / directory:   1 block,    256 bytes
+        inode 2, README:        1 block,    150 bytes
+        inode 3, largefile:    40 blocks, 20480 bytes
+        inode 4, smallfile:     1 block,     26 bytes
+        inode 5, sh:           56 blocks, 28184 bytes
+        inode 6, ls:           55 blocks, 27992 bytes
+        inode 7, init:         45 blocks, 22856 bytes
+        inode 8, cat:          46 blocks, 23168 bytes
+        inode 9, echo:         45 blocks, 22896 bytes
+    The blocks have continuous block numbers. inode 1 (/) block index 1 points to block 324, and the final indirect block pointer of echo points to block 619, so the total number of blocks used is 296, but six of those blocks are indirect blocks, one for each of the files with >12 blocks. Those indirect blocks follow consecutively after the previous direct block, so in total, all of the blocks are contiguous.
+
+
+Question #8: How much space is wasted in storing smallfile?
+
+    The filesize of smallfile is 26 bytes, and it consumes 1 block, which is 512 bytes. Thus, smallfile wastes 486 bytes. (I thought the question had something to do with sparse files, but I don't think that SFS supports sparse files ?)

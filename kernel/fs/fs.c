@@ -187,6 +187,16 @@ fs_init(void)
 {
     struct fs_type *root_fs;
 
+    struct inode *curr_inode;
+    inum_t i;
+    int file_count, dir_count, dev_count, blk_count, file_blk_count;
+    err_t error;
+    struct sfs_dirent *dirent;
+    struct blk_header *bh;
+    int blk_index, indir_blk_index;
+    blk_t blk, indir_blk;
+    offset_t ofs, indir_blk_ofs;
+
     // File system type list
     list_init(&fs_type_list);
     spinlock_init(&fs_type_lock);
@@ -227,6 +237,88 @@ fs_init(void)
     condvar_init(&cleanup_thread_cv);
 
     // stdout
+
+    file_count = 0;
+    dir_count = 0;
+    dev_count = 0;
+    blk_count = 0;
+    for (i = 1; i < ((struct sfs_sb_info*)root_sb->s_fs_info)->s_num_inodes; i++) {
+        error = fs_get_inode(root_sb, i, &curr_inode);
+        if (error == ERR_OK && ((curr_inode->i_ftype == FTYPE_FILE) || (curr_inode->i_ftype == FTYPE_DIR) || (curr_inode->i_ftype == FTYPE_DEV))) {
+            if (curr_inode->i_ftype == FTYPE_FILE) {
+                file_blk_count = 0;
+                file_count++;
+                kprintf("\nFile with inode->i_inum %d in use\n", curr_inode->i_inum);
+                kprintf("    i_ref: %d\n", curr_inode->i_ref);
+                for (ofs = 0, bh = NULL; ofs < curr_inode->i_size; ofs += BDEV_BLK_SIZE) {
+                    blk_index = ofs / BDEV_BLK_SIZE;
+                    if (blk_index < SFS_NDIRECT) {
+                        // Direct block
+                        blk = ((struct sfs_inode_info *)curr_inode->i_fs_info)->i_addrs[blk_index];
+                        if (blk != 0) {
+                            kprintf("    inode %d block pointer %d (direct) points to block %d\n", curr_inode->i_inum, blk_index, blk);
+                            blk_count++;
+                            file_blk_count++;
+                        }
+                    } else {
+                        // Indirect block
+                        indir_blk_index = SFS_NDIRECT + (blk_index - SFS_NDIRECT) / (BDEV_BLK_SIZE / sizeof(uint32_t));
+                        indir_blk = ((struct sfs_inode_info *)curr_inode->i_fs_info)->i_addrs[indir_blk_index];
+                        bh = bdev_get_blk(curr_inode->sb->bdev, indir_blk);
+                        indir_blk_ofs = (blk_index - SFS_NDIRECT) % (BDEV_BLK_SIZE / sizeof(uint32_t));
+                        blk = ((blk_t*)bh->data)[indir_blk_ofs];
+                        if (blk != 0) {
+                            kprintf("    inode %d block pointer %d (indirect) points to indirect block %d, where entry %d points to block %d\n", curr_inode->i_inum, blk_index, indir_blk, indir_blk_ofs, blk);
+                            blk_count++;
+                            file_blk_count++;
+                        }
+                        bdev_release_blk(bh);
+                    }
+                }
+                kprintf("    Total number of data blocks: %d\n", file_blk_count);
+                kprintf("    i_size: %d bytes\n", curr_inode->i_size);
+
+            } else if (curr_inode->i_ftype == FTYPE_DIR) {
+                file_blk_count = 0;
+                dir_count++;
+                kprintf("\nDir with inode->i_inum %d in use\n", curr_inode->i_inum);
+                kprintf("    i_ref: %d\n", curr_inode->i_ref);
+                for (ofs = 0, bh = NULL; ofs < curr_inode->i_size; ofs += sizeof(struct sfs_dirent), dirent++) {
+                    if (ofs % BDEV_BLK_SIZE == 0) {
+                        if (bh != NULL) {
+                            bdev_release_blk(bh);
+                        }
+                        blk_index = ofs / BDEV_BLK_SIZE;
+                        blk = ((struct sfs_inode_info *)curr_inode->i_fs_info)->i_addrs[blk_index];
+                        kprintf("    inode %d block pointer %d (direct) points to block %d\n", curr_inode->i_inum, blk_index, blk);
+                        bh = bdev_get_blk(curr_inode->sb->bdev, blk);
+                        dirent = (struct sfs_dirent*)bh->data;
+                        blk_count++;
+                        file_blk_count++;
+                    }
+                    kprintf("        Entry for directory inode %d:  inum %d,  %s\n", curr_inode->i_inum, dirent->inum, dirent->name);
+                }
+                if (bh != NULL) {
+                    bdev_release_blk(bh);
+                }
+                kprintf("    Total number of data blocks: %d\n", file_blk_count);
+                kprintf("    i_size: %d bytes\n", curr_inode->i_size);
+
+            } else if (curr_inode->i_ftype == FTYPE_DEV) {
+                dev_count++;
+                kprintf("\nDev with inode->i_inum %d in use\n", curr_inode->i_inum);
+                kprintf("    i_ref: %d\n", curr_inode->i_ref);
+            }
+        } else if (error == ERR_NOMEM) {
+            kprintf("Failed to get inode %d due to ERR_NOMEM\n", i & 0xff);
+        }
+        
+        fs_release_inode(curr_inode);
+    }
+    kprintf("\nTotal number of file inodes: %d\n", file_count);
+    kprintf("Total number of dir inodes: %d\n", dir_count);
+    kprintf("Total number of dev inodes: %d\n", dev_count);
+    kprintf("Total number of data blocks (including directory files): %d\n", blk_count);
 }
 
 void
