@@ -14,17 +14,17 @@ TIMEOUT = {
 }
 
 test_weights = {
-    "2-close-test": 12,
-    "2-dup-console": 4,
-    "2-dup-read": 4,
-    "2-fd-limit": 5,
-    "2-fstat-test": 4,
+    "2-close-test": 18,
+    "2-dup-console": 2,
+    "2-dup-read": 2,
+    "2-fd-limit": 3,
+    "2-fstat-test": 2,
     "2-open-bad-args": 12,
     "2-open-twice": 12,
     "2-read-bad-args": 12,
-    "2-read-small": 12,
-    "2-readdir-test": 4,
-    "2-write-bad-args": 4
+    "2-read-small": 18,
+    "2-readdir-test": 2,
+    "2-write-bad-args": 2
 }
 
 # ANSI color
