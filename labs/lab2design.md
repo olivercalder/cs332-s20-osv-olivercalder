@@ -46,8 +46,8 @@ There are a few useful functions provided by osv:
 Since all our system calls will be dealing with files, we think it will be useful to
 add a function that allocates a file descriptor, and another that validates a file descriptor:
 
-- `static int alloc_fd()`:
-   Will get a file, look through process's open file table and find an available fd.
+- `static int alloc_fd(struct file *f)`:
+   Will get a pointer to file, look through process's open file table to find an available fd, and store the pointer there. Returns the chosen fd.
 - `static bool validate_fd(int fd)`:
    Will get the file descriptor, making sure it's a valid file descriptor (in the open file table for the process).
 
