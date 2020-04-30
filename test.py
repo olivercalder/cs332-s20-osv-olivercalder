@@ -82,29 +82,33 @@ def main():
             print("running test: "+test)
 
         # found test, run in a subprocess
-        try:
-            ofs = out.tell()
-            qemu = Popen(["make", "qemu", "--quiet"], stdin=PIPE, stdout=out, stderr=STDOUT, universal_newlines=True)
+        with open("/tmp/test.input", "w") as test_input:
+            test_input.write(test+"\nquit\n")
+        with open("/tmp/test.input") as test_input:
             try:
-                qemu.communicate(timeout=TIMEOUT[lab], input=test+"\rquit\r")
-            except TimeoutExpired as e:
-                print("Exceeded Timeout " + str(TIMEOUT[lab]) + " seconds")
-                print("possibly due to kernel panic, check lab{}output".format(lab))
-                qemu.terminate()
-                pass
 
-            # read output from test
-            if check_output(out, test, ofs):
-                print(ANSI_GREEN + "passed " + ANSI_RESET + test)
-                test_stats[test] = PASSED
-            else:
-                test_stats[test] = FAILED
-                print(ANSI_RED + "failed " + ANSI_RESET + test)
-            print('-------------------------------')
-        except BrokenPipeError:
-            print("fails to start qemu")
-            # This just means that QEMU never started
-            pass
+                ofs = out.tell()
+                qemu = Popen(["make", "qemu", "--quiet"], stdin=test_input, stdout=out, stderr=STDOUT, universal_newlines=True)
+                try:
+                    qemu.wait(timeout=TIMEOUT[lab])
+                except TimeoutExpired as e:
+                    print("Exceeded Timeout " + str(TIMEOUT[lab]) + " seconds")
+                    print("possibly due to kernel panic, check lab{}output".format(lab))
+                    qemu.terminate()
+                    pass
+
+                # read output from test
+                if check_output(out, test, ofs):
+                    print(ANSI_GREEN + "passed " + ANSI_RESET + test)
+                    test_stats[test] = PASSED
+                else:
+                    test_stats[test] = FAILED
+                    print(ANSI_RED + "failed " + ANSI_RESET + test)
+                print('-------------------------------')
+            except BrokenPipeError:
+                print("fails to start qemu")
+                # This just means that QEMU never started
+                pass
 
     # examine test stats
     test_summary(test_stats, lab)
