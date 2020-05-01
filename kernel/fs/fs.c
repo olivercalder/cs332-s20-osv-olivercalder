@@ -187,6 +187,8 @@ fs_init(void)
 {
     struct fs_type *root_fs;
 
+    // Lab 1 variables:
+    /*
     struct inode *curr_inode;
     inum_t i;
     int file_count, dir_count, dev_count, blk_count, file_blk_count;
@@ -196,6 +198,7 @@ fs_init(void)
     int blk_index, indir_blk_index;
     blk_t blk, indir_blk;
     offset_t ofs, indir_blk_ofs;
+    */
 
     // File system type list
     list_init(&fs_type_list);
@@ -238,6 +241,8 @@ fs_init(void)
 
     // stdout
 
+    // Lab 1 work:
+    /*
     file_count = 0;
     dir_count = 0;
     dev_count = 0;
@@ -319,6 +324,7 @@ fs_init(void)
     kprintf("Total number of dir inodes: %d\n", dir_count);
     kprintf("Total number of dev inodes: %d\n", dev_count);
     kprintf("Total number of data blocks (including directory files): %d\n", blk_count);
+    */
 }
 
 void
