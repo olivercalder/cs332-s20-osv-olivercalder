@@ -18,6 +18,7 @@ void malloc_test(void);
 int
 main(int argc, char **argv)
 {
+    getpid();
     char cmdline[MAXLINE];
     while (1) {
         puts(prompt, 3);

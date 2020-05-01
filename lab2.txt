@@ -1,0 +1,16 @@
+Question #1
+What is the first line of C code executed in the kernel when there is an interrupt? To force an interrupt, perform a system call. Add a `getpid` call within `sh.c` and use gdb to trace through it with the `si` command (`si` steps by one assembly instruction). You can add `build/user/sh` as a symbol file in your gdbinit (adding `add-symbol-file build/user/sh 0x00000000004000e8` should let you add a breakpoint at `sh.c:main`). Hint: you can use the cs register, which selects the code segment, to tell when you move from user to kernel mode (its value will change). Display its value with `p $cs`.
+
+    After the system call is placed (by calling getpid()), various assembly code is run, including handling of vectors from `arch/x86_64/kernel/vectors.S` and a context switch performed by `arch/x86_64/kernel/trapasm.S`, the first line of C code which runs is the beginning of the `trap` function from `arch/x86_64/kernel/trap.c`, which allocates the variable `err_t err`.
+
+
+Question #2
+How large (in bytes) is a trap frame?
+
+    A trapframe is a struct consisting of 22 variables, each of type uint64_t, which is an 8-byte type. Thus, the total byte size of a trapframe is 22 * 8 = 176 bytes. This number is a multiple of 8 (and 16) so there is not internal fragmentation within the struct.
+
+
+Question #3
+Set a breakpoint in the kernel implementation of a system call (e.g., `sys_getpid`) and continue executing until the breakpoint is hit (be sure to call `getpid` withing `sh.c`. Do a backtrace, `bt` in gdb. What kernel functions are reported by the backtrace when it reaches `sys_getpid`?
+
+    The backtrace reports sys_getpid (kernel/syscall.c) was called by syscall (kernel/syscall.c), which was called by x86_64_syscall_trap_handler (arch/x86_64/kernel/syscall.c), which was called by trap_invoke_handler (kernel/trap.c), which was called by trap (arch/x86_64/kernel/trap.c), which was called by alltraps (arch/x86_64/kernel/trapasm.S).
