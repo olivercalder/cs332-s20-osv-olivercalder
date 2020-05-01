@@ -121,7 +121,7 @@ The goal of this part of the lab is twofold: (1) examine how the file system con
 
 Refer to the [overview document](https://github.com/Carleton-College-CS/osv-s20/blob/master/labs/overview.md#file-system) for a high-level description of the file system in osv.
 
-It's up to you how to go about answering the following questions. For reference, I added about 30 lines to `kernel/fs/fs.c` to print (via `kprintf`) the information I needed for questions 5–8, including adding `#include <kernel/bdev.h>` to `fc.c`. I spent most of my time reading `kernel/fs/fs.c`, `kernel/fs/sfs/sfs.c`, `kernel/bdev.c`, `include/kernel/fs.h`, `include/kernel/sfs.h`, and `include/kernel/bdev.h`.
+It's up to you how to go about answering the following questions. For reference, I added about 30 lines to `kernel/fs/fs.c` to print (via `kprintf`) the information I needed for questions 5–8, including adding `#include <kernel/bdev.h>` to `fs.c`. I spent most of my time reading `kernel/fs/fs.c`, `kernel/fs/sfs/sfs.c`, `kernel/bdev.c`, `include/kernel/fs.h`, `include/kernel/sfs.h`, and `include/kernel/bdev.h`.
 You may also find it useful to look at the utility that constructs the disk image that osv uses, `tools/mkfs.c`.
 Only your answers to the questions will be evaluated, but make sure you explain how you arrived at them for full credit.
 
