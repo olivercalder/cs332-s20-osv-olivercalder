@@ -14,7 +14,7 @@
 
 struct fdtable {
     struct file *table[PROC_MAX_FILE];  // array of pointers to open files; NULL if empty
-    struct spinlock lock;               // lock held when modifying (not accessing) fdtable
+    //struct spinlock lock;               // lock held when modifying (not accessing) fdtable
     int max;                            // maximum number of open files for a single process
     int count;                          // current number of open files
     int first_avail;                    // index to begin looking for openings in the table

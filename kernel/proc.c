@@ -88,17 +88,21 @@ proc_validate_fd(struct proc *p, int fd)
 sysret_t
 proc_alloc_fd(struct proc *p, struct file *file)
 {
-    spinlock_acquire(&p->fdtable->lock);
+    if (p->fdtable->count >= p->fdtable->max) {
+        return ERR_NOMEM;
+    }
+    //spinlock_acquire(&p->fdtable->lock);
     int index = p->fdtable->first_avail;
     while (proc_validate_fd(p, index)) {
         index = (index + 1) % p->fdtable->max;
-        if (index == p->fdtable->first_avail) {
+        if (index == p->fdtable->first_avail % p->fdtable->max) {
             return ERR_NOMEM;
         }
     }
     p->fdtable->table[index] = file;
-    p->fdtable->first_avail = index + 1;
-    spinlock_release(&p->fdtable->lock);
+    p->fdtable->first_avail = index + 1;  // no mod here so that in the case of full table, when the next fd is removed from index, min(first_avail, index) will yield index
+    p->fdtable->count++;
+    //spinlock_release(&p->fdtable->lock);
     return index;
 }
 
@@ -113,7 +117,7 @@ struct file*
 proc_remove_fd(struct proc *p, int fd)
 {
     struct file *file;
-    spinlock_acquire(&p->fdtable->lock);
+    //spinlock_acquire(&p->fdtable->lock);
     int curr_min = p->fdtable->first_avail;
     if (!proc_validate_fd(p, fd)) {
         return (void *)ERR_INVAL;
@@ -122,7 +126,7 @@ proc_remove_fd(struct proc *p, int fd)
     p->fdtable->table[fd] = NULL;
     p->fdtable->first_avail = fd < curr_min ? fd : curr_min;
     p->fdtable->count--;
-    spinlock_release(&p->fdtable->lock);
+    //spinlock_release(&p->fdtable->lock);
     return file;
 }
 
@@ -137,12 +141,12 @@ struct file*
 proc_get_fd(struct proc *p, int fd)
 {
     struct file *file;
-    spinlock_acquire(&p->fdtable->lock);
+    //spinlock_acquire(&p->fdtable->lock);
     if (!proc_validate_fd(p, fd)) {
         return (void *)ERR_INVAL;
     }
     file = p->fdtable->table[fd];
-    spinlock_release(&p->fdtable->lock);
+    //spinlock_release(&p->fdtable->lock);
     return file;
 }
 
@@ -177,15 +181,15 @@ proc_init(char* name)
         return NULL;
     }
     p->fdtable = fdtable;
-    spinlock_init(&p->fdtable->lock);
-    spinlock_acquire(&p->fdtable->lock);
+    //spinlock_init(&p->fdtable->lock);
+    //spinlock_acquire(&p->fdtable->lock);
     p->fdtable->max = PROC_MAX_FILE;
     p->fdtable->count = 0;
     p->fdtable->first_avail = 0;
     for (int i = 0; i < PROC_MAX_FILE; i++) {
         p->fdtable->table[i] = NULL;
     }
-    spinlock_release(&p->fdtable->lock);
+    //spinlock_release(&p->fdtable->lock);
     proc_alloc_fd(p, &stdin);
     proc_alloc_fd(p, &stdout);
 
