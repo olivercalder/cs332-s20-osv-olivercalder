@@ -544,7 +544,7 @@ sys_readdir(void *arg)
         return ERR_INVAL;
     }
 
-    if ((struct dirent *)dirent == NULL) {
+    if (!validate_bufptr((struct dirent *)dirent, sizeof(struct dirent *))) {
         return ERR_FAULT;
     }
 
@@ -593,13 +593,13 @@ sys_fstat(void *arg)
     kassert(fetch_arg(arg, 1, &fd));
     kassert(fetch_arg(arg, 2, &stat));
 
-    if ((struct stat *)stat == NULL) {
+    if (!validate_bufptr((struct stat *)stat, sizeof(struct stat *))) {
         return ERR_FAULT;
     }
 
     file = get_fd((int)fd);
 
-    if (file == (void *)ERR_INVAL) { // || *file == stdin || *file == stdout) {
+    if (file == (void *)ERR_INVAL || file == &stdin || file == &stdout) {
         return ERR_INVAL;
     }
 
