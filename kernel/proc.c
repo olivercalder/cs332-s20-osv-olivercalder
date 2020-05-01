@@ -56,7 +56,94 @@ ptable_dump(void)
 void
 proc_free(struct proc* p)
 {
+    kfree(p->fdtable);
     kmem_cache_free(proc_allocator, p);
+}
+
+/*
+ * Verifies that the given file descriptor is within the bounds of possible
+ * file descriptor values, and that the given file descriptor is currently
+ * in use in the given process's file descriptor table.
+ */
+bool
+proc_validate_fd(struct proc *p, int fd)
+{
+    if (fd < 0 || fd > p->fdtable->max) {
+        return False;
+    }
+    if (p->fdtable->table[fd] == NULL) {
+        return False;
+    }
+    return True;
+}
+
+/*
+ * Allocates the lowest available position in the fdtable of the given process
+ * for the given file.
+ *
+ * Return:
+ * file descriptor of the allocated file in the table.
+ * ERR_NOMEM - The file descriptor table is full
+ */
+sysret_t
+proc_alloc_fd(struct proc *p, struct file *file)
+{
+    spinlock_acquire(&p->fdtable->lock);
+    int index = p->fdtable->first_avail;
+    while (proc_validate_fd(p, index)) {
+        index = (index + 1) % p->fdtable->max;
+        if (index == p->fdtable->first_avail) {
+            return ERR_NOMEM;
+        }
+    }
+    p->fdtable->table[index] = file;
+    p->fdtable->first_avail = index + 1;
+    spinlock_release(&p->fdtable->lock);
+    return index;
+}
+
+/*
+ * Removes the given file descriptor from the given process's file descriptor table
+ *
+ * Return:
+ * On success, the file pointer corresponding to the file descriptor which was removed.
+ * ERR_INVAL - The given file descriptor is not in the process's fdtable.
+ */
+struct file*
+proc_remove_fd(struct proc *p, int fd)
+{
+    struct file *file;
+    spinlock_acquire(&p->fdtable->lock);
+    int curr_min = p->fdtable->first_avail;
+    if (!proc_validate_fd(p, fd)) {
+        return (void *)ERR_INVAL;
+    }
+    file = p->fdtable->table[fd];
+    p->fdtable->table[fd] = NULL;
+    p->fdtable->first_avail = fd < curr_min ? fd : curr_min;
+    p->fdtable->count--;
+    spinlock_release(&p->fdtable->lock);
+    return file;
+}
+
+/*
+ * Returns the file pointer stored at the given index of the file descriptor table
+ *
+ * Return:
+ * the file pointer at the given index.
+ * ERR_INVAL - The given file descriptor is not in the process's fdtable.
+ */
+struct file*
+proc_get_fd(struct proc *p, int fd)
+{
+    struct file *file;
+    spinlock_acquire(&p->fdtable->lock);
+    if (!proc_validate_fd(p, fd)) {
+        return (void *)ERR_INVAL;
+    }
+    file = p->fdtable->table[fd];
+    spinlock_release(&p->fdtable->lock);
+    return file;
 }
 
 void
@@ -84,6 +171,24 @@ proc_init(char* name)
         return NULL;
     }
 
+    struct fdtable *fdtable = (struct fdtable *)kmalloc(sizeof(struct fdtable));
+    if (fdtable == NULL) {
+        proc_free(p);
+        return NULL;
+    }
+    p->fdtable = fdtable;
+    spinlock_init(&p->fdtable->lock);
+    spinlock_acquire(&p->fdtable->lock);
+    p->fdtable->max = PROC_MAX_FILE;
+    p->fdtable->count = 0;
+    p->fdtable->first_avail = 0;
+    for (int i = 0; i < PROC_MAX_FILE; i++) {
+        p->fdtable->table[i] = NULL;
+    }
+    spinlock_release(&p->fdtable->lock);
+    proc_alloc_fd(p, &stdin);
+    proc_alloc_fd(p, &stdout);
+
     if (as_init(&p->as) != ERR_OK) {
         proc_free(p);
         return NULL;
@@ -104,6 +209,7 @@ proc_init(char* name)
         proc_free(p);
         return NULL;
     }
+
     return p;
 }
 

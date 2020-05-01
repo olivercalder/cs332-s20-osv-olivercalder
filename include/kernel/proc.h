@@ -12,6 +12,14 @@
 #define PROC_NAME_LEN 32
 #define PROC_MAX_FILE 128
 
+struct fdtable {
+    struct file *table[PROC_MAX_FILE];  // array of pointers to open files; NULL if empty
+    struct spinlock lock;               // lock held when modifying (not accessing) fdtable
+    int max;                            // maximum number of open files for a single process
+    int count;                          // current number of open files
+    int first_avail;                    // index to begin looking for openings in the table
+};
+
 struct proc {
     pid_t pid;
     char name[PROC_NAME_LEN];
@@ -19,9 +27,45 @@ struct proc {
     struct inode *cwd;                  // current working directory
     List threads;                       // list of threads belong to the process, right now just 1 per process
     Node proc_node;                     // used by ptable to keep track each process
+    struct fdtable *fdtable;            // table storing file descriptors
 };
 
 struct proc *init_proc;
+
+/*
+ * Verifies that the given file descriptor is within the bounds of possible
+ * file descriptor values, and that the given file descriptor is currently
+ * in use in the given process's file descriptor table.
+ */
+bool proc_validate_fd(struct proc *p, int fd);
+
+/*
+ * Allocates the lowest available position in the fdtable of the given process
+ * for the given file.
+ *
+ * Return:
+ * file descriptor of the allocated file in the table.
+ * ERR_NOMEM - The file descriptor table is full.
+ */
+sysret_t proc_alloc_fd(struct proc *p, struct file *file);
+
+/*
+ * Removes the given file descriptor from the given process's file descriptor table
+ *
+ * Return:
+ * On success, the file pointer corresponding to the file descriptor which was removed.
+ * ERR_INVAL - The given file descriptor is not in the process's fdtable.
+ */
+struct file* proc_remove_fd(struct proc *p, int fd);
+
+/*
+ * Returns the file pointer stored at the given index of the file descriptor table
+ *
+ * Return:
+ * the file pointer at the given index.
+ * ERR_INVAL - The given file descriptor is not in the process's fdtable.
+ */
+struct file* proc_get_fd(struct proc *p, int fd);
 
 void proc_sys_init(void);
 
