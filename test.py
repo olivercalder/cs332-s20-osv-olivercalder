@@ -4,6 +4,9 @@ import argparse
 import os
 import subprocess
 import sys
+import os
+import time
+from select import select
 from subprocess import Popen, PIPE, STDOUT, TimeoutExpired
 
 # The number of seconds it takes to run the test suite
@@ -24,7 +27,15 @@ test_weights = {
     "2-read-bad-args": 12,
     "2-read-small": 18,
     "2-readdir-test": 2,
-    "2-write-bad-args": 2
+    "2-write-bad-args": 2,
+    "3-fork-fd": 25,
+    "3-fork-test": 25,
+    "3-fork-tree": 25,
+    "3-pipe-robust": 0,
+    "3-pipe-test": 0,
+    "3-race-test": 10,
+    "3-spawn-args": 0,
+    "3-wait-twice": 15
 }
 
 # ANSI color
@@ -52,7 +63,7 @@ def check_output(out, test, ofs):
 
 def test_summary(test_stats, lab):
     score = 0
-    if lab == 2:
+    if lab == 2 or lab == 3:
         for test, result in test_stats.items():
             if result == PASSED:
                 if "{}-{}".format(lab, test) in test_weights:
@@ -74,6 +85,18 @@ def main():
     # retrieve list of tests for the lab
     testdir = os.path.join(os.getcwd(), "user/lab"+str(lab))
     out.write("test dir: "+testdir+"\n")
+    try:
+        os.mkfifo("/tmp/osv-test.in")
+    except FileExistsError:
+        pass
+    except Exception:
+        raise
+    try:
+        os.mkfifo("/tmp/osv-test.out")
+    except FileExistsError:
+        pass
+    except Exception:
+        raise
 
     for test in os.listdir(testdir):
         if test.endswith(".c"):
@@ -82,33 +105,43 @@ def main():
             print("running test: "+test)
 
         # found test, run in a subprocess
-        with open("/tmp/test.input", "w") as test_input:
-            test_input.write(test+"\nquit\n")
-        with open("/tmp/test.input") as test_input:
+        try:
+            ofs = out.tell()
+            qemu = Popen(["make", "qemu-test", "--quiet"])
+            pin = open("/tmp/osv-test.in", "w")
+            pout = open("/tmp/osv-test.out")
+            print("booting osv")
+            select([pout], [], [])
+            time.sleep(0.5) # select seems to return slightly before osv has finished booting
+            print("sending {}\nquit\n".format(test))
+            pin.write("{}\nquit\n".format(test))
+            pin.flush()
             try:
-
-                ofs = out.tell()
-                qemu = Popen(["make", "qemu", "--quiet"], stdin=test_input, stdout=out, stderr=STDOUT, universal_newlines=True)
-                try:
-                    qemu.wait(timeout=TIMEOUT[lab])
-                except TimeoutExpired as e:
-                    print("Exceeded Timeout " + str(TIMEOUT[lab]) + " seconds")
-                    print("possibly due to kernel panic, check lab{}output".format(lab))
-                    qemu.terminate()
-                    pass
-
-                # read output from test
-                if check_output(out, test, ofs):
-                    print(ANSI_GREEN + "passed " + ANSI_RESET + test)
-                    test_stats[test] = PASSED
-                else:
-                    test_stats[test] = FAILED
-                    print(ANSI_RED + "failed " + ANSI_RESET + test)
-                print('-------------------------------')
-            except BrokenPipeError:
-                print("fails to start qemu")
-                # This just means that QEMU never started
+                print("waiting for osv")
+                qemu.wait(timeout=TIMEOUT[lab])
+                print("reading output")
+                out.write(pout.read())
+            except TimeoutExpired as e:
+                print("Exceeded Timeout " + str(TIMEOUT[lab]) + " seconds")
+                print("possibly due to kernel panic, check lab{}output".format(lab))
+                qemu.terminate()
                 pass
+            finally:
+                pin.close()
+                pout.close()
+
+            # read output from test
+            if check_output(out, test, ofs):
+                print(ANSI_GREEN + "passed " + ANSI_RESET + test)
+                test_stats[test] = PASSED
+            else:
+                test_stats[test] = FAILED
+                print(ANSI_RED + "failed " + ANSI_RESET + test)
+            print('-------------------------------')
+        except BrokenPipeError:
+            print("fails to start qemu")
+            # This just means that QEMU never started
+            pass
 
     # examine test stats
     test_summary(test_stats, lab)

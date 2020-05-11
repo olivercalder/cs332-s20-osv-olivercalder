@@ -17,6 +17,7 @@ KERNEL_CLFAGS :=
 MKDIR_P := mkdir -p
 HOST_CC := gcc
 QEMUOPTS := -serial mon:stdio -m 512 -no-reboot -device isa-debug-exit  #-d int
+QEMUTESTOPTS := -serial pipe:/tmp/osv-test -monitor none -m 512 -no-reboot -device isa-debug-exit  #-d int
 GDBPORT := $(shell expr `id -u` % 5000 + 25000)
 QEMUGDB := -gdb tcp::$(GDBPORT)
 
@@ -128,6 +129,9 @@ DRIVE_OPTS := -drive file=$(OSV_IMG),index=0,media=disk,format=raw -drive file=$
 
 qemu: osv
 	$(QEMU) $(QEMUOPTS) $(DRIVE_OPTS) -nographic
+
+qemu-test: osv
+	$(QEMU) $(QEMUTESTOPTS) $(DRIVE_OPTS) -nographic
 
 qemu-graphic: osv
 	$(QEMU) $(QEMUOPTS) $(DRIVE_OPTS)
