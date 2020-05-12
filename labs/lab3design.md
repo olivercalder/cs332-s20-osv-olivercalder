@@ -11,6 +11,7 @@ The goal of this project is to implement the core system process-management call
 `fork` creates a new process identical to the current process, and creates a new thread to run that process. The parent process adds the new child thread to its list of threads, and the new child process holds the PID of its parent. `fork` returns twice: it returns the process ID of the new child process to the parent process, and it returns `0` to the child thread.
 
 The primary data structures which will be modified when calling `fork` are:
+
 - a new `struct proc` for the child
 - a new `struct thread` for the thread, containing the new `struct proc`
 - a duplicate trap frame for the child thread
@@ -23,6 +24,7 @@ The primary data structures which will be modified when calling `fork` are:
 `wait` pauses the execution of the current thread until the child thread with the given PID returns. If the PID is -1, wait until any child process returns. `wait` returns the process ID of the child process that terminated, and copies the process's exit status to the memory location specified by the arguments to `wait`.
 
 The primary data structures of interest for `wait`:
+
 - The child thread table for the process calling `wait`
 - The sleeplock for the `cttable` entry corresponding to the child process with the given PID
 - The return status of the process at that `cttable` entry
@@ -32,6 +34,7 @@ The primary data structures of interest for `wait`:
 `exit` halts the execution of the thread and frees its resources. Before the thread exits, it saves its exit status in its parent's `cttable` entry, if the parent has not already exited.
 
 The primary data structures which will be modified when calling `exit` are:
+
 - The child thread table for the process calling `exit`, which should be nearly all freed
 - If the parent process has not exited:
   - Write the exit status to the parent's `cttable` entry
@@ -55,19 +58,23 @@ The primary data structures which will be modified when calling `exit` are:
 Several additions are necessary to `struct proc`:
 
 **Parent PID**: stored in `pid_t ppid`
+
 - This allows a child thread to learn about or interact with its parent process
 
 **Parent status**: stored in `bool parent_live`
+
 - `1` if parent is live (has not exited)
 - `0` if parent has exited
 - If a parent exits, it first goes to all non-exited children and sets this value to `0` for each of them
 - When a thread exits, it checks if this value is `1`, and if so, writes its exit status to the 
 
 **Parent cttable entry**: stored in `struct cttable_ele *parent_entry`
+
 - This allows a process to quickly find its entry in its parent's child thread table
 - The structure of both the the table entries and the table itself are defined below
 
 **Child thread table**: stored in `struct cttable *cttable` (to replace `List threads`, which only stores `struct thread`s)
+
 ```c
 struct cttable_ele {
     bool allocated;         // Identifies whether this slot of the table is currently allocated (1) or available (0)
@@ -85,6 +92,7 @@ struct cttable {
     int first_empty;    // provides the index of the first available slot in the table
 }
 ```
+
 - There should be no lock needed on the `struct cttable` as a whole, since only the process which owns the cttable will ever modify its overall form
   - Individual child threads will only ever modify their specific entry in the table, but not the table as a whole
 - The sleeplock is stored as a pointer so that the parent will be able to exit and be reclaimed without interfering with the ability of the child process to release the spinlock successfully
@@ -111,6 +119,7 @@ struct cttable {
 #### fork
 
 **Description:**
+
 ```c
 /*
  * Creates a new process as a copy of the current process, with
@@ -126,6 +135,7 @@ sys_fork(void *arg);
 ```
 
 **Behavior:**
+
 - A new process needs to be created through `kernel/proc.c:proc_init`
 - Parent must copy its memory to the child via `kernel/mm/vm.c:as_copy_as` 
   - Any changes in the child's memory after `fork` is not visible to the parent
@@ -154,6 +164,7 @@ sys_fork(void *arg);
 #### wait
 
 **Description:**
+
 ```c
 /*
  * Corresponds to int wait(int pid, int *wstatus);
@@ -174,6 +185,7 @@ sys_wait(void *arg);
 ```
 
 Corresponding process function:
+
 ```c
 /*
  * Wait for a process to change state. If pid is ANY_CHILD, wait for any child process.
@@ -187,6 +199,7 @@ int proc_wait(pid_t pid, int* status);
 ```
 
 **Behavior:**
+
 - Checks the `cttable` for the given child PID
 - Keeps looking through the table until either the corresponding PID is found or a number of allocated entries equal to `cctable->count` have been found
   - If `cttable->count == 0`, then return `ERR_CHILD` immediately
@@ -207,6 +220,7 @@ int proc_wait(pid_t pid, int* status);
 #### exit
 
 **Description**
+
 ```c
 /*
  * Corresponds to void exit(int status);
@@ -220,12 +234,14 @@ sys_exit(void *arg);
 ```
 
 Corresponding process function:
+
 ```c
 /* Exit a process with a status */
 void proc_exit(int status);
 ```
 
 **Behavior:**
+
 - Go through every entry of the process's `cttable` and for every entry:
   - Check if the entry is terminated by calling `sleeplock_try_acquire`
   - If `sleeplock_try_acquire` returns `ERR_OK`, then free the memory of the sleeplock
