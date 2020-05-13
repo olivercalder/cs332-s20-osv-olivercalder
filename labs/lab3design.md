@@ -66,7 +66,7 @@ Several additions are necessary to `struct proc`:
 - `1` if parent is live (has not exited)
 - `0` if parent has exited
 - If a parent exits, it first goes to all non-exited children and sets this value to `0` for each of them
-- When a thread exits, it checks if this value is `1`, and if so, writes its exit status to the 
+- When a thread exits, it checks if this value is `1`, and if so, writes its exit status to `cttable->status` of the `cttable` entry where it is stored (in its parent's `cttable`)
 
 **Parent cttable entry**: stored in `struct cttable_ele *parent_entry`
 
@@ -81,7 +81,7 @@ struct cttable_ele {
     pid_t cttable_pid;      // Stores a copy of the process's PID in case the thread struct is reclaimed before the parent has a chance to check its PID
     struct thread *thread;  // The pointer to the actual thread struct
     struct sleeplock *lock; // The lock which prohibits the a process from being able to access a child thread's return value until it is finished
-    sysret_t status;        // The exit status of the child process, which is undefined until the sleeplock is released by the 
+    sysret_t status;        // The exit status of the child process, which is undefined until the sleeplock is released by the child process
 }
 
 struct cttable {
