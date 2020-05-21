@@ -14,7 +14,6 @@
 
 struct fdtable {
     struct file *table[PROC_MAX_FILE];  // array of pointers to open files; NULL if empty
-    //struct spinlock lock;               // lock held when modifying (not accessing) fdtable
     int max;                            // maximum number of open files for a single process
     int count;                          // current number of open files
     int first_avail;                    // index to begin looking for openings in the table
@@ -27,7 +26,7 @@ struct proc {
     struct inode *cwd;                  // current working directory
     List threads;                       // list of threads belong to the process, right now just 1 per process
     Node proc_node;                     // used by ptable to keep track each process
-    struct fdtable *fdtable;            // table storing file descriptors
+    struct fdtable fdtable;             // table storing file descriptors
 };
 
 struct proc *init_proc;
