@@ -36,12 +36,10 @@ The primary data structures of interest for `wait`:
 
 The primary data structures which will be modified when calling `exit` are:
 
-- The child thread table for the process calling `exit`, which should be nearly all freed
+- The child thread table for the process calling `exit`
 - The files in the `fdtable` for the exiting process must be closed
 - If the parent process has not exited:
   - Write the exit status to the parent's `cttable` entry
-- If the parent process has exited:
-  - Free the sleeplock and the spinlock
 
 ## In-depth Analysis and Implementation
 
@@ -55,25 +53,45 @@ The primary data structures which will be modified when calling `exit` are:
 
 ### Key Data Structures
 
+#### Global exit lock
+
+Need a global `struct spinlock exit_lock` which prevents race conditions when multiple threads attempt to exit simultaneously.
+
+- This prevents the need for separate spinlocks for each child thread, and reduces the overhead of allocating, initializing, acquiring, releasing, and freeing the spinlock every time a process is forked and exits
+- `exit_lock` should be initialized as part of `proc_sys_init()`
+- This lock should only be held when an exiting thread:
+  - Releases its wait lock
+  - Checks the `parent_live` value, and if `1`, write return value to its `ctlist_entry` of its parent's `ctlist`
+  - Checks each entry in its `ctlist`, and if `sleeplock_try_acquire()` returns false, then writes `parent_live = 0` for that child, and always frees the ctlist entry
+- After this is released, it can worry about freeing its own memory
+
 #### struct proc
 
 Several additions are necessary to `struct proc`:
 
-**Parent PID**: stored in `pid_t ppid`
+**Parent PID:** stored in `pid_t ppid`
 
-- This allows a child thread to learn about or interact with its parent process
+- This allows a child thread to keep track of its parent process
 
-**Parent status**: stored in `bool parent_live`
+**Parent status:** stored in `bool parent_live`
 
 - `1` if parent is live (has not exited)
 - `0` if parent has exited
-- If a parent exits, it first goes to all non-exited children and sets this value to `0` for each of them
-- When a thread exits, it checks if this value is `1`, and if so, writes its exit status to `ctlist_entry->status` of the `ctlist` entry where it is stored (in its parent's `ctlist`, which is a list of `ctlist_entry`s, which are defined below)
+- If a thread exits, it first goes to all non-exited children and sets this value to `0` for each of them
+- When a thread exits, it checks if this value is `1`, and if so, writes its exit status to `proc->status`
 
-**Parent ctlist entry**: stored in `struct ctlist_entry *ctlist_entry`
+**Exit status:** stored in `sysret_t *status`
 
-- This allows a process to quickly find the ctlist struct in which it is stored (in its parent's ctlist) so it can store its exit status, release its sleeplock, or acquire its spinlock
-- The structure of the `struct ctlist_entry` is defined below
+- This is equivalent to `&(ctlist_entry->status)` where `ctlist_entry` is the `struct ctlist_entry` for the given thread in its parent's `ctlist`
+- If the parent exits, the `struct ctlist_entry` will be freed, but if the child checks `parent_live` and finds it to be false, it will not attempt to access this memory location
+
+**Wait lock from parent's ctlist entry:** stored in `struct sleeplock *wait_lock`
+
+- This is used as a condition variable
+- The sleeplock itself is stored at `&(ctlist_entry->wait_lock)` where `ctlist_entry` is the `struct ctlist_entry` for the given thread in its parent's `ctlist`
+- When a process is born through a call to `fork()`, it acquires the its own wait lock
+- When a process exits, it releases its wait lock
+- Processes can check the status of their children by attempting to acquire a child's wait lock
 
 **Child thread list**: stored in `List ctlist`
 
@@ -81,20 +99,19 @@ Several additions are necessary to `struct proc`:
 struct ctlist_entry {
     pid_t pid;
     struct thread *thread;
-    struct sleeplock *ct_lock;
-    struct spinlock *exit_lock;
+    struct sleeplock wait_lock;
     Node node;
     sysret_t status;
 }
 ```
 
-- Use `list_entry(<node>, struct ctlist_entry, node)` to get a pointer to the struct itself
-- The sleeplock is stored as a pointer so that the parent will be able to exit and be reclaimed without interfering with the ability of the child process to release the spinlock successfully
-  - May be beneficial to have the `ctlist_entry` outlive the parent process, but that adds complexity as then it could be the parent's or the child's job to free the `ctlist_entry`. Either way, this would allow for the sleeplock to be part of the struct, rather than a pointer
-- Similarly, exit lock is stored as a pointer so that whichever process exits last will be able to acquire it, verify that it is the last relevant process alive, and then release and free it
-- The exit lock prohibits a parent and child from exiting simultaneously, thus running into problems around writing data to the `ctlist_entry` (defined below) and deciding who frees the sleeplock
-- When a thread exits, it must acquire its own `ctlist_entry->exit_lock` while it checks its parent's status and writes the exit status there if needed, and then releases the exit lock
-  - The thread then iterate through each child thread in its `ctlist`, acquire each of their exit locks in turn, change their `parent_live` value, then release the lock and go on freeing the `ctlist_entry`
+- Use `list_entry(<node_var>, struct ctlist_entry, node)` to get a pointer to the struct itself
+- The sleeplock is part of the `ctlist_entry` itself, and will be freed along with it when the thread exits
+  - The child thread will check its `parent_live` value before trying to release the sleeplock, so a null pointer exception will not occur
+  - Furthermore, freeing a sleeplock which is currently held has no negative effects
+- The global exit lock prohibits two threads from exiting simultaneously, thus running into problems around writing data to the `ctlist_entry` (defined below)
+  - When a thread exits, it must acquire the global exit lock while it checks its parent's status and writes the exit status there if needed, and while clearing out child threads
+  - To clear out child threads, the thread iterates through each child thread in its `ctlist`, change their `parent_live` value, then frees the `ctlist_entry`
 
 #### fdtable
 
@@ -123,18 +140,14 @@ struct fdtable_entry {
 
 - The process is responsible for cleaning up its own memory on exit
   - This includes the entries of the process's `ctlist`
-- sleeplocks and spinlocks are allocated on a child-by-child basis and freed after use
-- A sleeplock for a given child process is freed by the parent after their call to `wait` returns
-- If the parent exits before the child process exits, then it is the responsibility of the child to free its own sleeplock
-- Similarly, it is responsibility of the last remaining relevant process to free the spinlock
-- If a process forks many children and does not wait on them, then the `ctlist` entries will sit allocated and with exit statuses stored
-- When a process exits, it must go through every entry of its `ctlist` and for every entry:
-  - Acquire the exit lock for that `ctlist_entry`
+- Wait locks are allocated on a per-child basis and freed automatically by the parent when the parent frees each element of their `ctlist`
+- A `ctlist_entry` for a given child process is freed by the parent after their call to `wait` returns, or when the parent calls `exit`
+- If a thread forks many children and does not wait on them, then the `ctlist` entries will sit allocated and with exit statuses stored until the thread calls `exit`
+- When a process exits, it must first acquire the global `exit_lock`, and then check `parent_live` and write its exit status if so, and then go through every entry of its `ctlist` and for every entry:
   - Check if the entry is terminated by calling `sleeplock_try_acquire`
-  - If `sleeplock_try_acquire` returns `ERR_OK`, then release the exit lock and free the memory of the sleeplock and the spinlock
+  - If `sleeplock_try_acquire` returns `ERR_LOCK_BUSY`, then update the child's `parent_live` value to `0`
+  - Free the memory of the `ctlist_entry`
   - The thread pointers themselves will have already been freed by the child processes
-  - If the child process has not terminated, then update the child's `parent_live` value, release the exit lock, and do not free the locks or the thread pointers
-  - Free the `ctlist_entry`
 - Since the only process which may call `wait` using a given process's PID is that process's direct parent, then there is no need to have another thread inherit the child if that child's parent exits before the child does
 
 ### System functions
@@ -160,15 +173,10 @@ sys_fork(void *arg);
 **Behavior:**
 
 - A new process needs to be created through `kernel/proc.c:proc_init`
-- Set up the child thread's `proc struct`
-  - Set `ppid` to the parent's PID
-  - Set `parent_live = 1`
-  - Set `ctlist_entry` to the memory address of the `struct ctlist_entry` which is added to its parent's `ctlist`
 - Parent must copy its memory to the child via `kernel/mm/vm.c:as_copy_as` 
   - Any changes in the child's memory after `fork` is not visible to the parent
   - Any changes in the parent's memory after `fork` is not visible to the child
-- All the opened files must be duplicated in the new process (not as simple as a memory copy)
-  - Go through every entry of the parent's `fdtable`, and for each one, have the child process call `sys_open` with the proper pathname, flags, and mode (all now saved in the `fdtable`)
+- Duplicate current thread (parent process)'s trapframe in the new thread (child process)
 - Create a new thread to run the process
   - Do this via `thread_create` and `thread_start_context`
   - `sys_spawn` provides a great template for what `sys_fork` should do
@@ -176,13 +184,18 @@ sys_fork(void *arg);
   - The priority for the new thread should be `0` in order to enable interrupts
 - Create a new `ctlist_entry` for the new thread (let it be denoted `ctle`)
   - Set `ctle->thread` to the child's thread struct
-  - Allocate a new sleeplock using `kmalloc`, set `ctle->ct_lock` to it
-  - Allocate a new spinlock using `kmalloc`, set `ctle->exit_lock` to it
+  - Allocate a new sleeplock using `kmalloc`, set `ctle->wait_lock` to it
   - Set `ctle->pid` to the child process's PID
   - Add the entry to the parent process's `ctlist` using `list_append(ctlist, ctle->node)`
-- Duplicate current thread (parent process)'s trapframe in the new thread (child process)
-- Have the child process acquire the sleeplock before the fork returns
-  - This may be difficult...
+- Allocate a new `ctlist_entry` and add it to the process's `ctlist`
+- Set up the child thread's `proc struct`
+  - Set `ppid` to the parent's PID
+  - Set `parent_live = 1`
+  - Set `status = &(new_ctlist->status)`
+  - Set `wait_lock = &(new_ctlist->wait_lock)`
+- Have the child process acquire its wait lock before the fork returns
+- All the opened files must be duplicated in the new process (not as simple as a memory copy)
+  - Go through every entry of the parent's `fdtable`, and for each one, have the child process call `sys_open` with the proper pathname, flags, and mode (all now saved in the `fdtable`)
 - Set up trapframe to return 0 in the child via `kernel/trap.c:tf_set_return`, while returning the child's pid in the parent
 
 #### wait
@@ -229,17 +242,17 @@ int proc_wait(pid_t pid, int* status);
 - Keeps looking through the list (using `currnode = list_next(currnode)` and getting `ctle` for each) until either the corresponding PID is found or `currnode = list_end(ctlist)`
   - If `list_empty(ctlist)` then return `ERR_CHILD` immediately
   - If the given PID is not found in the table (and is not `-1`), then return `ERR_CHILD`
-- If the given PID is found, then call `sleeplock_acquire(ctle->ct_lock)`
-  - Once the sleeplock is acquired, then the child process must have finished
+- If the given PID is found, then call `sleeplock_acquire(ctle->wait_lock)`
+  - Once the sleeplock is acquired, then the child process must have finished and written its exit status to `ctle`
   - Extract the exit status from the struct and save it to be returned later
-  - Release and then free the sleeplock
   - Remove `ctle` from the `ctlist` using `list_remove(currnode)`
   - Free `ctle`
   - Return the PID of the child
 - If the given PID is `-1`, then loop through the entries of the `ctlist`, trying `sleeplock_try_acquire` on each until one of them returns true
-  - Apply the same steps
+  - Apply the same steps as above
   - Return the PID of the child for which `sleeplock_try_acquire` returned true
-  - The exit lock is only necessary if `sleeplock_try_acquire` returns false and we want to modify that entry anyway, but in this case, we just move on, so no need to acquire it
+- The exit lock is not necessary at any point in the wait call, since it is only acquired by exiting threads or threads interacting with separate process data
+  - By using a sleeplock instead, the thread calling wait never interacts directly with any other thread, so it never needs to acquire the exit lock
 
 #### exit
 
@@ -266,18 +279,17 @@ void proc_exit(int status);
 
 **Behavior:**
 
-- Go through every entry of the process's `fdtable` and for every file descriptor, call `sys_close(fd)`
+- Acquire the global `exit_lock`
+- Check the `parent_live` value:
+  - If `parent_live == 1`, then write return status to `proc->status` and release `proc->wait_lock`
+  - If `parent_live == 0`, then do nothing -- The parent will have already freed the ctlist entry which had stored the exiting thread
 - Go through every entry of the process's `ctlist` and for every entry `ctle`:
-  - Acquire the exit lock using `spinlock_acquire(ctle->exit_lock)`
-  - Check if the entry is terminated by calling `sleeplock_try_acquire(ctle->ct_lock)`
-  - If `sleeplock_try_acquire` returns `ERR_OK`, then release the exit lock and free the memory of the sleeplock and the spinlock
-  - The thread pointers themselves will have already been freed by the child processes
-  - If `sleeplock_try_acquire` returns `ERR_LOCK_BUSY`, then the child process has not terminated, then do not free the sleeplock or the thread pointers, but do set the child's `ctle->thread->proc->parent_live = 0`, and then release the exit lock
-  - Remove `ctle->ct_node` from `ctlist` using `list_remove(ctle->ct_node)`
-  - Free `ctle` (Note that this does not free the thread or the locks, which have been or will be freed by the child)
-- Acquire the process's own `exit_lock` by calling `spinlock_acquire(proc->ctlist_entry->exit_lock)`
-- If the process's `parent_live` value equals `1`, then set the process's `ctlist_entry->status` to the exit status of the process, then release the spinlock
-- If the process's `parent_live` value equals `0`, then release the exit lock and free the sleeplock and the spinlock
+  - Check if the entry is terminated by calling `sleeplock_try_acquire(&(ctle->wait_lock))` -- Note that `sleeplock_try_acquire` is safe since child processes cannot release their wait locks unless they hold the global exit lock, which the parent currently holds
+  - If `sleeplock_try_acquire` returns `ERR_OK`, then the child process has terminated -- The thread struct itself will have already been freed by the child processes
+  - If `sleeplock_try_acquire` returns `ERR_LOCK_BUSY`, then the child process has not terminated, so set the child's `ctle->thread->proc->parent_live = 0`
+  - Always: Remove `ctle->node` from `ctlist` using `list_remove(ctle->node)`
+  - Always: Free `ctle` -- Note that this does not free the thread, which has been freed already or will be freed by the child when it exits, but it does free the sleeplock, even if the child is currently holding it: the child will only attempt to release if it sees that `parent_live == 1`
+- Go through every entry of the process's `fdtable` and for every file descriptor, call `sys_close(fd)`
 - Free the process's data
   - The process's address space
   - The process's proc struct
@@ -299,9 +311,9 @@ Will likely need functions for `validate_pid`, `get_pid`, `alloc_pid`, and `remo
 - What if the parent waits after the child exits?
   - Answer: The parent will find the PID in its `ctlist`, call `sleeplock_acquire`, and immediately acquire the sleeplock, indicating that the child process has finished. It may then carry out the usual `wait` cleanup and exit status behavior.
 - What if the parent exits without waiting for the child?
-  - Answer: The parent changes the child's proc struct `parent_live` value to `0`, thus indicating that the child should not attempt to set an exit status for its parent when it eventually returns, and that the child is in charge of freeing its own sleeplock in addition to all the other data associated with the child. The parent frees all of its own data, and the residual data (essentially just the sleeplock) for all other terminated child processes, leaving only the child thread pointer and sleeplock pointers un-freed. The child is orphaned, and when it exits, itdoes not report its exit status to any other process, and instead frees all its data and exits.
+  - Answer: The parent changes the child's proc struct `parent_live` value to `0`, thus indicating that the child should not attempt to set an exit status for its parent when it eventually returns, and that the child is in charge of freeing its own sleeplock in addition to all the other data associated with the child. The parent frees all of its own data, and the residual data (essentially just the sleeplock) for all other terminated child processes, leaving only the child thread pointer and sleeplock pointers un-freed. The child is orphaned, and when it exits, it does not report its exit status to any other process, and instead frees all its data and exits.
 - What if the parent calls exit, calls `sleeplock_try_acquire`, sees that the child is still running, then proceeds to free the `ctlist`, but before doing so, the child exits and tries to write things to the partially deceased parent or free the spinlock before the ?
-  - Answer: Depending on the scheduler, null pointer exceptions might occur. To be safe, I've added a spinlock to the `ctlist` struct which both the parent and child try to grab when exiting, so only one can exit at a time, and both must hold the spinlock while checking/changing the `parent_live` value or writing exit status to a parent. Like the sleeplock, the spinlock is freed by whichever process exits last.
+  - Answer: In order to check the status of or write data to parent or child processes, a thread must hold the global `exit_lock`. Thus, a child thread cannot exit and write data to its parent if its parent is in the process of exiting.
 
 ### Unanswered questions
 
