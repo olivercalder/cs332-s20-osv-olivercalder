@@ -115,26 +115,10 @@ struct ctlist_entry {
 
 #### fdtable
 
-Several changes are needed to `fdtable` in the `struct proc`:
+Make the fdtable struct stored directly in the proc struct, so that copying the proc struct results in copying the fdtable as well.
 
-- Need to store the pathname, flags, and mode so that the file can be reopened by a child process, if needed
-
-**File descriptor table entry**: stored in `struct fdtable_entry *table[PROC_MAX_FILE]`
-
-```c
-struct fdtable_entry {
-    struct file *file;
-    char *pathname;
-    int flags;
-    int mode;
-}
-```
-
-- Need to change `kernel/syscall.c:alloc_fd` and `kernel/proc.c:proc_alloc_fd` to take pathname, flags, and mode as parameters
-- Initializes the table with `NULL` values (by luck, this is already implemented)
-- Need to change `kernel/proc.c:proc_alloc_fd` to allocate memory for the fdtable entry whenever a new file descriptor is opened
-  - Also need to allocate memory for `char *pathname`, probably by using `strlen` and `strcpy`
-- Need to change `kernel/proc.c:proc_remove_fd` to free the memory of `char *pathname` and the table entry as a whole
+- Need to change all file descriptor related calls in `kernel/proc.c` to use `&(proc->fdtable)->table` instead of `proc->fdtable->table`
+- Need to have the child process call `fs_reopen_file` on each open file
 
 ### General notes on memory and locks
 
@@ -195,7 +179,7 @@ sys_fork(void *arg);
   - Set `wait_lock = &(new_ctlist->wait_lock)`
 - Have the child process acquire its wait lock before the fork returns
 - All the opened files must be duplicated in the new process (not as simple as a memory copy)
-  - Go through every entry of the parent's `fdtable`, and for each one, have the child process call `sys_open` with the proper pathname, flags, and mode (all now saved in the `fdtable`)
+  - Go through every entry of the parent's `fdtable`, and for each one, have the child process call `fs_reopen_file`
 - Set up trapframe to return 0 in the child via `kernel/trap.c:tf_set_return`, while returning the child's pid in the parent
 
 #### wait
