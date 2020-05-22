@@ -15,6 +15,8 @@
 List ptable; // process table
 struct spinlock ptable_lock;
 struct spinlock pid_lock;
+struct spinlock exit_lock;
+struct condvar wait_var;
 static int pid_allocator;
 struct kmem_cache *proc_allocator;
 
@@ -149,6 +151,8 @@ proc_sys_init(void)
     list_init(&ptable);
     spinlock_init(&ptable_lock);
     spinlock_init(&pid_lock);
+    spinlock_init(&exit_lock);
+    condvar_init(&wait_var);
     proc_allocator = kmem_cache_create(sizeof(struct proc));
     kassert(proc_allocator);
 }
@@ -160,11 +164,17 @@ static struct proc*
 proc_init(char* name)
 {
     struct super_block *sb;
+    struct proc *parent, *p;
     inum_t inum;
     err_t err;
 
-    struct proc *p = proc_alloc();
+    p = proc_alloc();
     if (p == NULL) {
+        return NULL;
+    }
+
+    if (as_init(&p->as) != ERR_OK) {
+        proc_free(p);
         return NULL;
     }
 
@@ -177,17 +187,20 @@ proc_init(char* name)
     proc_alloc_fd(p, &stdin);
     proc_alloc_fd(p, &stdout);
 
-    if (as_init(&p->as) != ERR_OK) {
-        proc_free(p);
-        return NULL;
-    }
-
     size_t slen = strlen(name);
     slen = slen < PROC_NAME_LEN-1 ? slen : PROC_NAME_LEN-1;
     memcpy(p->name, name, slen);
     p->name[slen] = 0;
 
+    p->parent_live = 0;
+    p->status = NULL;  // The pointer to the ctlist_entry->status, which will be created after the thread is created by proc_spawn or proc_fork
+    if ((parent = proc_current()) != NULL) {
+        p->parent_live = 1;
+        p->ppid = parent->pid;  // This causes a page fault in the initial process if not in the if statement
+    }
+
     list_init(&p->threads);
+    list_init(&p->ctlist);
 
     // cwd for all processes are root for now
     sb = root_sb;
@@ -205,8 +218,9 @@ err_t
 proc_spawn(char* name, char** argv, struct proc **p)
 {
     err_t err;
-    struct proc *proc;
+    struct proc *proc, *parent;
     struct thread *t;
+    struct ctlist_entry *ctle;
     vaddr_t entry_point;
     vaddr_t stackptr;
 
@@ -217,7 +231,6 @@ proc_spawn(char* name, char** argv, struct proc **p)
     if ((err = proc_load(proc, name, &entry_point)) != ERR_OK) {
         goto error;
     }
-
 
     // set up stack and allocate its memregion 
     if ((err = stack_setup(proc, argv, &stackptr)) != ERR_OK) {
@@ -234,6 +247,18 @@ proc_spawn(char* name, char** argv, struct proc **p)
     list_append(&ptable, &proc->proc_node);
     spinlock_release(&ptable_lock);
 
+    if ((parent = proc_current()) != NULL) {
+        if ((ctle = (struct ctlist_entry *)kmalloc(sizeof(struct ctlist_entry))) == NULL) {
+            err = ERR_NOMEM;
+            goto error;
+        }
+        ctle->pid = proc->pid;
+        ctle->thread = t;
+        ctle->status = STATUS_ALIVE;
+        proc->status = &ctle->status;  // Set up child's pointer to exit status
+        list_append(&parent->ctlist, &ctle->node);
+    }
+
     // set up trapframe for a new process
     tf_proc(t->tf, t->proc, entry_point, stackptr);
     thread_start_context(t, NULL, NULL);
@@ -249,12 +274,68 @@ error:
     return err;
 }
 
+/*
+ * Creates a new process as a copy of the current process, with
+ * the same open file descriptors.
+ *
+ * Return:
+ * the `struct proc*` of the new process
+ * NULL on error: kernel lacks space to create new process
+ */
 struct proc*
 proc_fork()
 {
+    struct proc *proc, *child_proc;
+    struct thread *thread, *child_thread;
+    struct ctlist_entry *ctle;
+    struct file *curr_file;
+    int i;
+
     kassert(proc_current());  // caller of fork must be a process
-    
-    /* your code here */
+
+    proc = proc_current();
+    if ((child_proc = proc_init(proc->name)) == NULL) {
+        return NULL;
+    }
+
+    if (as_copy_as(&proc->as, &child_proc->as) == ERR_NOMEM) {
+        proc_free(child_proc);
+        return NULL;
+    }
+
+    thread = thread_current();
+    if ((child_thread = thread_create(child_proc->name, child_proc, DEFAULT_PRI)) == NULL) {
+        goto error;
+    }
+
+    if ((ctle = (struct ctlist_entry *)kmalloc(sizeof(struct ctlist_entry))) == NULL) {
+        goto error;
+    }
+
+    // At this point, ERR_NOMEM should not occur, so safe to make other changes
+
+    ctle->pid = child_proc->pid;
+    ctle->thread = child_thread;
+    ctle->status = STATUS_ALIVE;
+    child_proc->status = &ctle->status;  // Set up child's pointer to exit status
+
+    list_append(&proc->ctlist, &ctle->node);
+
+    for (i = 2; i < (&proc->fdtable)->max; i++) {  // Don't reopen stdin and stdout
+        curr_file = (&proc->fdtable)->table[i];
+        if ((curr_file != NULL) && (curr_file != &stdin) && (curr_file != &stdout)) {
+            (&child_proc->fdtable)->table[i] = curr_file;
+            fs_reopen_file(curr_file);
+        }
+    }
+
+    *(child_thread->tf) = *(thread->tf);
+    tf_set_return(child_thread->tf, 0);
+    thread_start_context(child_thread, NULL, NULL);
+    return child_proc;
+error:
+    as_destroy(&child_proc->as);
+    proc_free(child_proc);
     return NULL;
 }
 
@@ -285,18 +366,105 @@ proc_detach_thread(struct thread *t)
     return last_thread;
 }
 
+/*
+ * Wait for a process to change state. If pid is ANY_CHILD, wait for any child process.
+ * If wstatus is not NULL, store the exit status of the child in wstatus.
+ *
+ * Return:
+ * pid of the child process that changes state.
+ * ERR_CHILD - The caller does not have a child with the specified pid.
+ */
 int
 proc_wait(pid_t pid, int* status)
 {
-    /* your code here */
+    struct proc *p;
+    Node *currnode;
+    struct ctlist_entry *ctle;
+
+    p = proc_current();
+
+    if (list_empty(&p->ctlist)) {
+        return ERR_CHILD;
+    }
+
+    currnode = list_begin(&p->ctlist);
+    if (pid == ANY_CHILD) {
+        while (1) {
+            if (currnode == &(&p->ctlist)->header) {
+                currnode = currnode->next;  // List uses a circular list with a dummy header
+            }
+            ctle = list_entry(currnode, struct ctlist_entry, node);
+            if (ctle->status != STATUS_ALIVE) {
+                if (status) {
+                    *status = ctle->status;
+                }
+                pid = ctle->pid;
+                list_remove(&ctle->node);
+                kfree(ctle);
+                break;
+            }
+            currnode = list_next(currnode);
+        }
+    } else {
+        while (currnode != &(&p->ctlist)->header) {
+            ctle = list_entry(currnode, struct ctlist_entry, node);
+            if (ctle->pid == pid) {
+                spinlock_acquire(&exit_lock);
+                while (ctle->status == STATUS_ALIVE) {
+                    condvar_wait(&wait_var, &exit_lock);
+                }
+                spinlock_release(&exit_lock);
+                if (status) {
+                    *status = ctle->status;
+                }
+                list_remove(&ctle->node);
+                kfree(ctle);
+                break;
+            }
+            currnode = list_next(currnode);
+        }
+        if (currnode == &(&p->ctlist)->header) {
+            pid = ERR_CHILD;
+        }
+    }
     return pid;
 }
 
+/* Exit a process with a statys */
 void
 proc_exit(int status)
 {
     struct thread *t = thread_current();
     struct proc *p = proc_current();
+    Node *currnode;
+    struct ctlist_entry *ctle;
+    int i;
+
+    for (i = 0; i < (&p->fdtable)->max; i++) {
+        if ((&p->fdtable)->table[i] != NULL) {
+            fs_close_file((&p->fdtable)->table[i]);
+        }
+    }
+
+    spinlock_acquire(&exit_lock);
+
+    if (p->parent_live == 1) {
+        *p->status = status;
+    }
+
+    currnode = list_begin(&p->ctlist);
+    while (currnode != &(&p->ctlist)->header) {
+        ctle = list_entry(currnode, struct ctlist_entry, node);
+        if (ctle->status == STATUS_ALIVE) {
+            ctle->thread->proc->parent_live = 0;
+        }
+        list_remove(&ctle->node);
+        kfree(ctle);
+    }
+
+    spinlock_release(&exit_lock);
+
+    condvar_broadcast(&wait_var);
 
     // detach current thread, switch to kernel page table
     // free current address space if proc has no more threads
@@ -309,7 +477,6 @@ proc_exit(int status)
     // release process's cwd
     fs_release_inode(p->cwd);
  
-    /* your code here */
 
     thread_exit(status);
 }

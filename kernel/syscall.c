@@ -115,6 +115,10 @@ validate_bufptr(void* buf, size_t size)
  * Verifies that the given file descriptor is within the bounds of possible
  * file descriptor values, and that the given file descriptor is currently
  * in use in the given process's file descriptor table.
+ *
+ * Return:
+ * true if fd valid
+ * false if fd not in bounds or not in the fdtable
  */
 static bool
 validate_fd(int fd)
@@ -157,7 +161,7 @@ remove_fd(int fd)
  *
  * Return:
  * the file pointer at the given index.
- * NULL - No file stored at the given index.
+ * ERR_INVAL - The given file descriptor is not in the process's fdtable.
  */
 static struct file*
 get_fd(int fd)
@@ -166,7 +170,15 @@ get_fd(int fd)
     return proc_get_fd(p, fd);
 }
 
-// int fork(void);
+/*
+ * Creates a new process as a copy of the current process, with
+ * the same open file descriptors.
+ *
+ * Returns:
+ * PID of child - returned in the parent process.
+ * 0 = returned in the newly created child process.
+ * ERR_NOMEM on error: kernel lachs space to create new process
+ */
 static sysret_t
 sys_fork(void *arg)
 {
@@ -219,26 +231,53 @@ sys_spawn(void *arg)
     return p->pid;
 }
 
-// int wait(int pid, int *wstatus);
+/*
+ * Corresponds to int wait(int pid, int *wstatus);
+ *
+ * Suspend execution until a child process terminates.
+ * Wait for child with pid `pid` to terminate.
+ * If `pid` is ANY_CHILD, wait for any child process to terminate.
+ * If wstatus is not NULL, store the exit status of the child in wstatus.
+ * A parent can only wait for the same child once.
+ *
+ * Return:
+ * PID of the child process that terminated.
+ * ERR_FAULT - Address of wstatus is invalid.
+ * ERR_CHILD - The caller does not have a child with the specified pid, or has
+ *             already waited for the child.
+ */
 static sysret_t
 sys_wait(void* arg)
 {
-    /* remove when writing your own solution */
-    for (;;) {}
-    panic("unreacchable");
+    sysarg_t pid, wstatus;
+
+    kassert(fetch_arg(arg, 1, &pid));
+    kassert(fetch_arg(arg, 2, &wstatus));
+
+    if ((int *)wstatus != NULL && !validate_bufptr((int *)wstatus, sizeof(int *))) {
+        return ERR_FAULT;
+    }
+
+    return proc_wait((pid_t) pid, (int *)wstatus);
 }
 
-// void exit(int status);
+/*
+ * Corresponds to void exit(int status);
+ *
+ * Halts program and reclaims resources consumed by program.
+ * The process will exit with the given status.
+ * Should never return.
+ */
 static sysret_t
 sys_exit(void* arg)
 {
-    // temp code for lab2 to terminate the kernel after one process exits
-    // remove for lab3
-    kprintf("shutting down\n");
-    shutdown();
-    kprintf("oops still running\n");
-    for(;;) {}
-    panic("syscall exit not implemented");
+    sysarg_t status;
+
+    kassert(fetch_arg(arg, 1, &status));
+
+    proc_exit((int) status);
+
+    return 1;
 }
 
 // int getpid(void);

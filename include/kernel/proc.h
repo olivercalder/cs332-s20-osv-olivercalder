@@ -12,6 +12,13 @@
 #define PROC_NAME_LEN 32
 #define PROC_MAX_FILE 128
 
+struct ctlist_entry {
+    pid_t pid;
+    struct thread *thread;
+    sysret_t status;
+    Node node;
+};
+
 struct fdtable {
     struct file *table[PROC_MAX_FILE];  // array of pointers to open files; NULL if empty
     int max;                            // maximum number of open files for a single process
@@ -27,6 +34,10 @@ struct proc {
     List threads;                       // list of threads belong to the process, right now just 1 per process
     Node proc_node;                     // used by ptable to keep track each process
     struct fdtable fdtable;             // table storing file descriptors
+    pid_t ppid;                         // parent's pid
+    bool parent_live;                   // 0 if parent thread has exited, else 1
+    sysret_t *status;                   // pointer to address where status should be stored
+    List ctlist;                        // List of child threads
 };
 
 struct proc *init_proc;
@@ -71,7 +82,14 @@ void proc_sys_init(void);
 /* Spawn a new process specified by executable name and argument */
 err_t proc_spawn(char *name, char** argv, struct proc **p);
 
-/* Fork a new process identical to current process */
+/*
+ * Creates a new process as a copy of the current process, with
+ * the same open file descriptors.
+ *
+ * Returns:
+ * the `struct proc*` of the new process
+ * NULL on error: kernel lacks space to create new process
+ */
 struct proc* proc_fork();
 
 /* Return current thread's process. NULL if current thread is not associated with any process */
