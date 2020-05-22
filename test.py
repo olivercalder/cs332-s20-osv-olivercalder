@@ -35,7 +35,14 @@ test_weights = {
     "3-pipe-test": 0,
     "3-race-test": 10,
     "3-spawn-args": 0,
-    "3-wait-twice": 15
+    "3-wait-twice": 15,
+    "4-bad-mem-access": 10,
+    "4-grow-stack": 25,
+    "4-grow-stack-edgecase": 10,
+    "4-malloc-test": 10,
+    "4-sbrk-decrement": 15,
+    "4-sbrk-large": 15,
+    "4-sbrk-small": 15
 }
 
 # ANSI color
@@ -57,13 +64,13 @@ def check_output(out, test, ofs):
         if ANSI_GREEN+"passed "+ANSI_RESET+test in line:
             test_passed = True
         if "ERROR" in line or "Assertion failed" in line or "PANIC" in line:
-            error = True # can't break here, need to finish reading to EOF
+            error = True  # can't break here, need to finish reading to EOF
     return test_passed and not error
 
 
 def test_summary(test_stats, lab):
     score = 0
-    if lab == 2 or lab == 3:
+    if lab == 2 or lab == 3 or lab == 4:
         for test, result in test_stats.items():
             if result == PASSED:
                 if "{}-{}".format(lab, test) in test_weights:

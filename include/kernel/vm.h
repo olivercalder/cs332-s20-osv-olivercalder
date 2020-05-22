@@ -128,6 +128,7 @@ void as_meminfo(struct addrspace *as);
  * End is extended size and old_bound is returned.
  * Return ERR_VM_BOUND if the extended region overlaps with other regions in the
  * address space.
+ * Return ERR_VM_INVALID if the extended region would have a negative extent.
  */
 err_t memregion_extend(struct memregion *region, int size, vaddr_t *old_bound);
 
