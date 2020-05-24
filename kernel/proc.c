@@ -321,7 +321,7 @@ proc_fork()
 
     list_append(&proc->ctlist, &ctle->node);
 
-    for (i = 2; i < (&proc->fdtable)->max; i++) {  // Don't reopen stdin and stdout
+    for (i = 0; i < (&proc->fdtable)->max; i++) {
         curr_file = (&proc->fdtable)->table[i];
         if ((curr_file != NULL) && (curr_file != &stdin) && (curr_file != &stdout)) {
             (&child_proc->fdtable)->table[i] = curr_file;
@@ -476,7 +476,8 @@ proc_exit(int status)
 
     // release process's cwd
     fs_release_inode(p->cwd);
- 
+
+    proc_free(p);
 
     thread_exit(status);
 }
