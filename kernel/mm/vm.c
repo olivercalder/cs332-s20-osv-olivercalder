@@ -32,10 +32,10 @@ static int memregion_comparator(const Node *a, const Node *b, void *aux);
 
 static void memregion_unmap_internal(struct memregion *region);
 
-static struct memregion* memregion_map_internal(struct addrspace *as, vaddr_t addr, size_t size, 
+static struct memregion* memregion_map_internal(struct addrspace *as, vaddr_t addr, size_t size,
         memperm_t perm, struct memstore *store, offset_t ofs, int shared);
 
-static struct memregion* memregion_copy_internal(struct addrspace *as, 
+static struct memregion* memregion_copy_internal(struct addrspace *as,
         struct memregion *src, vaddr_t addr);
 
 static struct memregion* memregion_find_internal(struct addrspace *as, vaddr_t addr, size_t size);
@@ -63,7 +63,7 @@ vm_init(void)
 {
     pmem_boot_init();
     vpmap_init();
-    pmem_init(); 
+    pmem_init();
     kmalloc_init();
 
     if ((memregion_allocator = kmem_cache_create(sizeof(struct memregion))) == NULL) {
@@ -140,7 +140,7 @@ as_copy_as(struct addrspace *src_as, struct addrspace *dst_as)
 }
 
 struct memregion*
-as_map_memregion(struct addrspace *as, vaddr_t addr, size_t size, memperm_t perm, 
+as_map_memregion(struct addrspace *as, vaddr_t addr, size_t size, memperm_t perm,
                     struct memstore *store, offset_t ofs, int shared)
 {
     kassert(as);
@@ -184,7 +184,7 @@ as_copy_memregion(struct addrspace *as, struct memregion *src, vaddr_t addr)
             sleeplock_acquire(&as->as_lock);
         }
     }
-    
+
     dst = memregion_copy_internal(as, src, addr);
 
     sleeplock_release(&as->as_lock);
@@ -196,7 +196,7 @@ as_copy_memregion(struct addrspace *as, struct memregion *src, vaddr_t addr)
 
 void
 as_meminfo(struct addrspace *as)
-{    
+{
     sleeplock_acquire(&as->as_lock);
     List *list = &as->regions;
     for (Node *n = list_begin(list); n != list_end(list); n = list_next(n)) {
@@ -252,9 +252,33 @@ found:
     sleeplock_release(&as->as_lock);
 }
 
+/*
+ * Extend a region of allocated memory by size bytes.
+ * End is extended size and old_bound is returned.
+ * Return ERR_VM_BOUND if the extended region overlaps with other regions in the
+ * address space.
+ * Return ERR_VM_INVALID if the extended region would have a negative extent.
+ */
 err_t
 memregion_extend(struct memregion *region, int size, vaddr_t *old_bound)
 {
+    Node *n;
+    List *list = &region->as->regions;
+    struct memregion *r;
+
+    if (region->end + size < region->start) {
+        return ERR_VM_INVALID;
+    }
+
+    for (n = list_begin(list); n != list_end(list); n = list_next(n)) {
+        r = (struct memregion *) list_entry(n, struct memregion, as_node);
+        if ((region->end < r->start) && (r->start < region->end + size)) {
+            return ERR_VM_BOUND;
+        }
+    }
+
+    *old_bound = region->end;
+    region->end += size;
     return ERR_OK;
 }
 
@@ -342,7 +366,7 @@ memregion_unmap_internal(struct memregion *region)
 }
 
 static struct memregion*
-memregion_map_internal(struct addrspace *as, vaddr_t addr, size_t size, memperm_t perm, 
+memregion_map_internal(struct addrspace *as, vaddr_t addr, size_t size, memperm_t perm,
                         struct memstore *store, offset_t ofs, int shared)
 {
     kassert(as);
@@ -370,7 +394,7 @@ memregion_map_internal(struct addrspace *as, vaddr_t addr, size_t size, memperm_
 
     // Link into address space's region list and memstore's reverse mapping
     list_append_ordered(&as->regions, &r->as_node, memregion_comparator, NULL);
-    
+
     r->as = as;
     r->start = addr;
     r->end = addr + size;
@@ -387,7 +411,7 @@ memregion_copy_internal(struct addrspace *as, struct memregion *src, vaddr_t add
 {
     struct memregion *dst;
     // Try mapping a region with the same attributes as the source
-    if ((dst = memregion_map_internal(as, addr, src->end - src->start, 
+    if ((dst = memregion_map_internal(as, addr, src->end - src->start,
             src->perm, src->store, src->ofs, src->shared)) != NULL) {
         // hard copy over everything
         if (vpmap_copy(src->as->vpmap, as->vpmap, src->start, addr,

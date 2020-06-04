@@ -218,7 +218,7 @@ sys_spawn(void *arg)
         kfree(buf);
         return ERR_NOMEM;
     }
-    // parse arguments  
+    // parse arguments
     while ((token = strtok_r(NULL, " ", &buf)) != NULL) {
         argv[argc] = token;
         argc++;
@@ -295,12 +295,12 @@ sys_sleep(void* arg)
 }
 
 /*
- * Corresponds to int open(const char *pathname, int flags, int mode); 
- * 
+ * Corresponds to int open(const char *pathname, int flags, int mode);
+ *
  * pathname: path to the file
  * flags: access mode of the file
  * mode: file permission mode if flags contains FS_CREAT
- * 
+ *
  * Open the file specified by pathname. Argument flags must include exactly one
  * of the following access modes:
  *   FS_RDONLY - Read-only mode
@@ -308,14 +308,14 @@ sys_sleep(void* arg)
  *   FS_RDWR - Read-write mode
  * flags can additionally include FS_CREAT. If FS_CREAT is included, a new file
  * is created with the specified permission (mode) if it does not exist yet.
- * 
+ *
  * Each open file maintains a current position, initially zero.
  *
  * Return:
  * Non-negative file descriptor on success.
  * The file descriptor returned by a successful call will be the lowest-numbered
  * file descriptor not currently open for the process.
- * 
+ *
  * ERR_FAULT - Address of pathname is invalid.
  * ERR_INVAL - flags has invalid value.
  * ERR_NOTEXIST - File specified by pathname does not exist, and FS_CREAT is not
@@ -650,10 +650,33 @@ sys_fstat(void *arg)
 }
 
 // void *sbrk(size_t increment);
+/*
+ * Corresponds to void* sbrk(int increment)
+ * Increase/decrement current process' heap size.
+ * If user requests to decrement more than the amount of heap allocated, treat it as sbrk(0)
+ *
+ * Return:
+ * On success, address of the previous program break/heap limit.
+ * ERR_NOMEM - Failed to extend the heap segment
+ */
 static sysret_t
 sys_sbrk(void *arg)
 {
-    panic("syscall sbrk not implemented");
+    err_t err;
+    sysarg_t increment;
+    vaddr_t old_bound;
+    struct memregion *heap = (&proc_current()->as)->heap;
+
+    kassert(fetch_arg(arg, 1, &increment));
+
+    if (heap->end + (int) increment < heap->start) {
+        increment = 0;
+    }
+
+    if ((err = memregion_extend(heap, (int) increment, &old_bound)) != ERR_OK) {
+        return ERR_NOMEM;
+    }
+    return old_bound;
 }
 
 // void memifo();
@@ -719,13 +742,13 @@ sys_info(void* arg)
     if (!validate_bufptr((void*)info, sizeof(struct sys_info))) {
         return ERR_FAULT;
     }
-    // fill in using user_pgfault 
+    // fill in using user_pgfault
     ((struct sys_info*)info)->num_pgfault = user_pgfault;
     return ERR_OK;
 }
 
 // void halt();
-static sysret_t 
+static sysret_t
 sys_halt(void* arg)
 {
     shutdown();
@@ -743,4 +766,3 @@ syscall(int num, void *arg)
         panic("Unknown system call");
     }
 }
-
